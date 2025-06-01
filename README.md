@@ -1,101 +1,321 @@
-# Analyse et surveillance des Marchés Publics et Accès aux Données via RAG
+# 🧾 Analyse des marchés publics et détection d'anomalies
 
-Ce projet vise à valoriser les données des marchés publics français à travers deux approches complémentaires : la **prédiction automatique du montant des marchés et l'analyse d'anomalies** et l’**accès conversationnel aux données** via un module RAG (Retrieval-Augmented Generation). Il repose sur l’exploitation de la base DECP (Données essentielles de la commande publique).
-
----
-
-## 🧠 Objectifs du projet
-
-1. **Estimation de montants** : prédire le montant estimé d’un marché public à partir de ses caractéristiques (code CPV, acheteur, durée, type de procédure, etc.).
-2. **Détection d’anomalies** : identifier des marchés présentant des montants atypiques ou incohérents selon les tendances observées.
-3. **Classification** : déterminer automatiquement la catégorie du marché (travaux, fournitures, services) à partir de ses métadonnées.
-4. **Module RAG** : permettre des requêtes en langage naturel sur la base DECP et générer des synthèses personnalisées.
-5. **Interface interactive** : proposer une interface Web (formulaire + chatbot) pour interagir avec les modèles prédictifs et le module RAG.
+**Projet de Data Science – Bootcamp Le Wagon, Batch #1992** 
 
 ---
 
-## 🗃️ Données utilisées
+## 🎯 Objectifs
 
-- **Source** : [Base DECP (SQLite)](https://www.data.gouv.fr/fr/datasets/r/43f54982-da60-4eb7-aaaf-ba935396209b)
-- **Schéma relationnel** : [dbdiagram.io](https://dbdiagram.io/d/DATALAB-V4-67f00d0c4f7afba18464f539)
-- **Champs clés** :
-  - `objet`, `montant`, `date_notification`, `acheteur_id`, `nature`, `type_procedure`, `code_cpv`, `lieu_execution`, etc.
+- **Renforcer la transparence** dans la commande publique
+- **Aider les collectivités** à mieux estimer les montants de leurs futurs marchés  
+- **Identifier les comportements atypiques** (voire suspects) dans les données ouvertes des marchés publics (données DECP)
+- **En bonus** : faciliter l'exploration des données via un chatbot basé sur la technologie RAG
 
 ---
 
-## 🧩 Modules du projet
+## 🔧 Modules du projet
 
-### 📦 Module 1 : Estimation de montants
-- Objectif : prédire un montant à partir des caractéristiques du marché.
-- Modèles : Régression linéaire, Random Forest, XGBoost, MLP.
-- Techniques : encodage de variables, évaluation (RMSE, MAE).
+### 🔹 Module 1 – Estimation des montants de marché (fourchettes)
+**🔍 Objectif** : Prédire une tranche réaliste de montant pour un nouveau marché public
 
-### 🧭 Module 2 : Détection d’anomalies
-- Objectif : repérer les marchés dont les montants dévient des tendances habituelles.
-- Méthodes : z-score, IQR, clustering, Isolation Forest.
-- Intérêt : détecter des erreurs, irrégularités ou pratiques atypiques.
+**🎯 Pourquoi** : Aider les collectivités à anticiper leurs dépenses et à prévenir les surcoûts
 
-### 🏷️ Module 3 : Classification du type de marché
-- Objectif : prédire la classe (`Travaux`, `Services`, `Fournitures`).
-- Approches : SVM, régression logistique, arbres de décision.
-- Gestion des classes déséquilibrées.
+**🔍 Défi** : Les codes CPV sont parfois trop larges → une prédiction exacte est illusoire
 
-### 🔍 Module 4 : RAG (Retrieval-Augmented Generation)
-- Objectif : interroger la base DECP en langage naturel.
-- Technologies : FAISS, LangChain ou solution maison.
-- Indexation : objets, descriptions, CCAG, lots.
-- Exemples de requêtes :
-  - *"Quels types de marchés sont passés par l’acheteur X en 2023 ?"*
-  - *"Donne-moi un résumé des marchés contenant le mot cybersécurité."*
+**✅ Solution** :
+- Transformation du problème en classification (fourchettes de montant)
+- **Modèles testés** : XGBoost, Random Forest, SVM
+- **Feature engineering** sur les colonnes CPV, procédure, localisation, acheteur, texte résumé...
 
-### 💬 Module 5 : Interface interactive
-- Objectif : proposer une interface pour tester les prédictions et les requêtes RAG.
-- Technologies : Streamlit ou FastAPI.
-- Fonctionnalités :
-  - Formulaire de prédiction à partir d’un marché fictif ou partiellement rempli.
-  - Chatbot pour interroger la base via RAG.
-  - (Bonus) Utilisation du prédicteur comme tool au sein d’un agent RAG.
+### 🔹 Module 2 – Recherche de marchés similaires (clustering & matching)
+**🔍 Objectif** : Trouver les 10 marchés passés les plus proches d'un marché donné
+
+**🎯 Pourquoi** : Aider une collectivité à se comparer à des marchés déjà réalisés
+
+**✅ Approches** :
+- Vectorisation des marchés (TF-IDF sur la description, features numériques)
+- Clustering (KMeans, DBSCAN) + recherche de proximité (NearestNeighbors)
+- Moteur de similarité utilisable dans l'interface Streamlit
+
+### 🔹 Module 3 – Détection d'anomalies dans les marchés publics
+**🔍 Objectif** : Repérer les marchés anormaux dans la base (montants suspects, comportements hors normes)
+
+**🎯 Pourquoi** : Lutter contre les dérives (clientélisme, favoritisme, entente)
+
+**✅ Méthodes** :
+- **Isolation Forest** : analyse non supervisée pour repérer les points rares
+- **DBSCAN** : identifie les marchés hors des clusters denses → signal d'alerte
+- **Visualisation** des marchés atypiques avec réduction de dimension (UMAP, t-SNE)
+- **Test de GNN** (Graph Neural Network) pour analyser les relations acheteurs-fournisseurs comme un graphe : les communautés isolées ou trop denses peuvent signaler des comportements suspects
+
+### 🧠 Module 4 (optionnel) – Interface RAG & exploration conversationnelle
+**🔍 Objectif** : Permettre à un utilisateur de poser des questions naturelles sur la base
+
+**Exemple** : *"Quels sont les marchés de cybersécurité passés en 2023 dans le 69 ?"*
+
+**🧰 Stack** :
+- LangChain, FAISS, embeddings open-source
+- Construction d'un index vectoriel des résumés de marché
+- Agent simple (ou chatbot) pour répondre aux requêtes de type : mots-clés, département, procédure, fourchette, etc.
+
+---
+
+## 🖥️ Interface utilisateur (Streamlit)
+
+Une app simple avec 3 à 4 pages :
+- **Estimation** d'un montant pour un nouveau marché
+- **Suggestion** de marchés similaires  
+- **Détection** d'anomalies
+- **(Bonus)** Chatbot exploratoire pour naviguer dans la base
+
+---
+
+## 📁 Données
+
+- **Source** : Données ouvertes DECP (data.gouv.fr)
+- **État** : Déjà prétraitées (normalisation, nettoyage) + schéma de base structuré
+- **Variables utilisées** : intitulé, description, acheteur, fournisseur, CPV, procédure, date, montant, localisation...
 
 ---
 
 ## 🧰 Stack technique
 
-- **Langage** : Python
-- **Librairies principales** : `pandas`, `scikit-learn`, `xgboost`, `faiss`, `langchain`, `matplotlib`, `streamlit`, `fastapi`
+- **Langage** : Python 3.9+
+- **ML/Data** : `pandas`, `scikit-learn`, `xgboost`, `matplotlib`, `seaborn`
+- **Clustering** : `scikit-learn`, `umap-learn`
+- **Anomalies** : `isolation-forest`, `dbscan`
+- **RAG** : `langchain`, `faiss-cpu`, `sentence-transformers`
+- **Interface** : `streamlit`
 - **Infrastructure** : Docker, Docker Compose
-- **Interface Web** : Streamlit ou FastAPI + frontend léger
 
 ---
 
 ## 🚀 Installation et lancement
 
+### 📋 Prérequis
+
+- **Python 3.12.9** via [pyenv](https://github.com/pyenv/pyenv)
+- **Git**
+- **Docker** et **Docker Compose** (optionnel)
+
+### 🐍 Installation avec pyenv (recommandé)
+
 ```bash
 # Cloner le dépôt
+# Se positionner dans le dossier souhaité dans le terminal
 git clone https://github.com/RonanB400/decp_ml.git
 cd decp_ml
 
-# Construire les containers Docker
-docker-compose up --build
+# Installer Python 3.12.9 avec pyenv (si pas déjà fait)
+pyenv install 3.12.9
+
+# Créer et activer votre environnement virtuel
+pyenv virtualenv 3.12.9 decp_ml_env
+pyenv local decp_ml_env
+
+# Installer les dépendances
+pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
-## 📁 Installation et lancement
+### 🔐 Configuration des variables d'environnement
 
-├── data/                  # Données sources (SQLite, CSV)
-├── notebooks/             # Analyses exploratoires
-├── models/                # Modèles entraînés
-├── app/                   # Code de l’interface (Streamlit / FastAPI)
-├── rag/                   # Module RAG et indexation
-├── predict/               # Modèles de prédiction
-├── classify/              # Modèles de classification
-├── detect/                # Détection d’anomalies
-├── docker-compose.yml
-└── README.md
+```bash
+# Copier le fichier d'exemple des variables d'environnement
+cp .env.example .env
 
+# Éditer le fichier .env avec vos clés API
+nano .env  # ou votre éditeur préféré
+
+# (Optionnel) Si vous utilisez direnv pour l'auto-chargement
+cp .envrc.example .envrc
+direnv allow
+```
+
+### 🚀 Lancement de l'application
+
+```bash
+# Lancer l'application Streamlit
+streamlit run app/main.py
+
+# L'application sera accessible sur http://localhost:8501
+```
+
+### 🐳 Installation avec Docker (alternative)
+
+```bash
+# Construire et lancer les containers
+docker-compose up --build
+
+# L'application sera accessible sur http://localhost:8501
+# Jupyter Lab sera accessible sur http://localhost:8888
+```
+
+---
+
+## 📁 Structure du projet
+
+```
+decp_ml/
+├── 📂 data/                    # Données sources (SQLite, CSV)
+│   ├── decp.sqlite            # Base DECP principale
+│   └── datalab.sqlite         # Base traitée
+├── 📂 notebooks/              # Analyses exploratoires
+├── 📂 src/                    # Code source principal
+│   ├── 📂 estimation/         # Module 1: Estimation montants
+│   ├── 📂 clustering/         # Module 2: Marchés similaires  
+│   ├── 📂 anomalies/          # Module 3: Détection anomalies
+│   └── 📂 rag/               # Module 4: Interface RAG
+├── 📂 models/                 # Modèles entraînés sauvegardés
+│   ├── 📂 estimation/
+│   ├── 📂 clustering/
+│   └── 📂 anomalies/
+├── 📂 app/                    # Interface Streamlit
+│   ├── 📂 pages/             # Pages de l'application
+│   ├── 📂 components/        # Composants réutilisables
+│   └── 📂 utils/             # Utilitaires interface
+├── 📂 tests/                  # Tests unitaires
+├── 📂 docs/                   # Documentation
+├── 📂 config/                 # Fichiers de configuration
+├── 📂 scripts/                # Scripts utilitaires
+├── .env.example               # Template des variables d'environnement
+├── .envrc.example             # Template direnv (optionnel)
+├── .python-version            # Version Python pour pyenv
+├── requirements.txt           # Dépendances Python
+├── docker-compose.yml         # Configuration Docker
+├── Dockerfile                 # Image Docker
+└── README.md                  # Ce fichier
+```
+
+---
+
+## 📖 Explication détaillée de la structure
+
+### 🎯 **Dossiers principaux**
+
+#### 📂 **`src/`** - Code source principal
+- **`src/estimation/`** - Module 1 : Estimation des montants (Personne 1)
+  - Classification par fourchettes de montants
+  - Feature engineering sur CPV, procédure, localisation
+  - Modèles : XGBoost, Random Forest, SVM
+
+- **`src/clustering/`** - Module 2 : Recherche de marchés similaires (Personne 2)
+  - Vectorisation TF-IDF des descriptions
+  - Clustering KMeans, DBSCAN
+  - Moteur de recherche de proximité
+
+- **`src/anomalies/`** - Module 3 : Détection d'anomalies (Personnes 3 & 4)
+  - Isolation Forest pour détecter les points rares
+  - DBSCAN pour identifier les outliers
+  - GNN pour analyser les relations acheteurs-fournisseurs
+  - Visualisation avec UMAP, t-SNE
+
+- **`src/rag/`** - Module 4 : Interface RAG (optionnel)
+  - Indexation vectorielle avec FAISS
+  - LangChain pour les requêtes en langage naturel
+  - Embeddings des descriptions de marchés
+
+#### 📂 **`app/`** - Interface utilisateur Streamlit
+- **`app/main.py`** - Application principale avec navigation entre modules
+- **`app/pages/`** - Pages spécifiques (estimation, clustering, anomalies, RAG)
+- **`app/components/`** - Composants réutilisables (graphiques, widgets, formulaires)
+- **`app/utils/`** - Utilitaires pour l'interface (helpers, formatage)
+
+#### 📂 **`models/`** - Modèles entraînés sauvegardés
+- **`models/estimation/`** - Modèles de classification des montants (.pkl, .joblib)
+- **`models/clustering/`** - Modèles de clustering et vectoriseurs
+- **`models/anomalies/`** - Modèles de détection d'anomalies
+
+### 🔧 **Dossiers de support**
+
+#### 📂 **`data/`** - Données (existant)
+- **`datalab.sqlite`** - Base de données traitée
+- **`processed/`** - Données preprocessées pour chaque module
+
+#### 📂 **`config/`** - Configuration
+- **`config.yaml`** - Paramètres centralisés (seuils, chemins, hyperparamètres)
+- Configuration des modèles, RAG, interface Streamlit
+
+#### 📂 **`notebooks/`** - Analyses exploratoires
+(ajoutez vos initiales dans le nom de vos notebooks)
+- Notebooks Jupyter pour l'exploration des données
+- Prototypage des modèles
+- Analyses statistiques et visualisations
+
+#### 📂 **`tests/`** - Tests unitaires
+- Tests pour valider chaque module
+- Tests d'intégration de l'interface
+- Validation des modèles
+
+#### 📂 **`docs/`** - Documentation
+- Documentation technique détaillée
+- Guides utilisateur
+- Rapports d'analyse
+- Images, logos pour l'interface
+- Fichiers CSS personnalisés
+- Schémas et diagrammes
+
+#### 📂 **`scripts/`** - Scripts utilitaires
+- Scripts de preprocessing des données
+- Scripts de déploiement
+- Utilitaires de maintenance
+
+
+### ⚙️ **Fichiers de configuration**
+
+- **`requirements.txt`** - Dépendances Python avec versions spécifiques
+- **`Dockerfile`** - Image Docker pour conteneurisation
+- **`docker-compose.yml`** - Orchestration des services (app + jupyter)
+- **`.env.example`** - Template des variables d'environnement (clés API, secrets)
+- **`.envrc.example`** - Template direnv pour auto-chargement des variables
+- **`.python-version`** - Version Python fixée pour pyenv
+- **`README.md`** - Documentation principale du projet
+
+### 🔐 **Gestion des secrets et variables d'environnement**
+
+#### Variables d'environnement nécessaires :
+```bash
+# API Keys (exemples)
+OPENAI_API_KEY=sk-...                    # Pour le module RAG
+HUGGINGFACE_API_TOKEN=hf_...             # Pour les embeddings
+STREAMLIT_SECRET_KEY=your-secret-key     # Pour les sessions Streamlit
+
+# Configuration base de données
+DATABASE_URL=sqlite:///data/datalab.sqlite  # Chemin vers la base DECP
+LOG_LEVEL=INFO                           # Niveau de logging
+
+# Configuration modèles
+MODEL_CACHE_DIR=./models                 # Dossier de cache des modèles
+EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+```
+
+#### Fichiers à ne PAS commiter :
+- **`.env`** - Variables personnelles (ajouté au .gitignore)
+- **`.envrc`** - Configuration direnv personnelle (ajouté au .gitignore)
+- **`models/*.pkl`** - Modèles entraînés volumineux
+
+### 🚀 **Workflow de développement**
+
+1. **Développement** : Chaque personne code dans son module `src/`
+2. **Tests** : Création de tests unitaires dans `tests/`
+3. **Sauvegarde** : Modèles entraînés dans `models/`
+4. **Documentation** : Ajout de docs dans `docs/`
+5. **Intégration** : Interface commune dans `app/`
+6. **Déploiement** : Via Docker avec `docker-compose up`
+
+
+---
 
 ## 📌 Livrables attendus
-- Scripts de nettoyage et modélisation
-- Modèles sauvegardés (.pkl, .joblib)
-- Base vectorielle et index FAISS
-- Application Web conteneurisée
-- Documentation technique
+
+- ✅ Scripts de preprocessing et feature engineering
+- ✅ Modèles entraînés et sauvegardés (`.pkl`, `.joblib`)
+- ✅ Base vectorielle et index FAISS (pour RAG)
+- ✅ Application Web interactive (Streamlit)
+- ✅ Documentation technique et guide utilisateur
+- ✅ Tests unitaires et validation des modèles
+- ✅ Rapport d'analyse et recommandations
+
+---
+
 

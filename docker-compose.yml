@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  decp-app:
+    build: .
+    container_name: decp_ml_app
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./config:/app/config
+    environment:
+      - PYTHONPATH=/app
+      - STREAMLIT_SERVER_PORT=8501
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+    command: streamlit run app/main.py
+    restart: unless-stopped
+
+  jupyter:
+    build: .
+    container_name: decp_ml_jupyter
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./:/app
+    environment:
+      - JUPYTER_ENABLE_LAB=yes
+    command: jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root --NotebookApp.token=''
+    restart: unless-stopped
+
+networks:
+  default:
+    name: decp_ml_network 

@@ -1,0 +1,64 @@
+# Configuration générale du projet DECP ML
+
+# Données
+data:
+  sqlite_path: "data/decp.sqlite"
+  datalab_path: "data/datalab.sqlite"
+  processed_data_path: "data/processed/"
+  
+# Modèles
+models:
+  estimation:
+    model_path: "models/estimation/"
+    features: ["cpv_code", "procedure_type", "location", "buyer_type", "duration"]
+    target: "amount_range"
+    test_size: 0.2
+    random_state: 42
+    
+  clustering:
+    model_path: "models/clustering/"
+    n_clusters: 50
+    similarity_threshold: 0.7
+    vectorizer_max_features: 5000
+    
+  anomalies:
+    model_path: "models/anomalies/"
+    isolation_forest:
+      contamination: 0.1
+      random_state: 42
+    dbscan:
+      eps: 0.5
+      min_samples: 5
+
+# RAG
+rag:
+  embeddings_model: "sentence-transformers/all-MiniLM-L6-v2"
+  faiss_index_path: "models/rag/faiss_index"
+  chunk_size: 500
+  chunk_overlap: 50
+  top_k: 10
+
+# Interface Streamlit
+streamlit:
+  title: "🧾 Analyse des marchés publics DECP"
+  layout: "wide"
+  initial_sidebar_state: "expanded"
+  
+# Logging
+logging:
+  level: "INFO"
+  format: "{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}"
+  file: "logs/decp_ml.log"
+
+# Seuils et paramètres métier
+business:
+  amount_ranges:
+    - [0, 25000]      # Marché de faible montant
+    - [25000, 90000]  # Marché adapté
+    - [90000, 221000] # Procédure formalisée européenne
+    - [221000, 1000000] # Marché important
+    - [1000000, float('inf')] # Très gros marché
+    
+  suspicious_patterns:
+    same_buyer_supplier_threshold: 10  # Nombre max de marchés entre mêmes parties
+    amount_variation_threshold: 0.5    # Seuil de variation anormale des montants 
