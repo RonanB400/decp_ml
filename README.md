@@ -94,7 +94,7 @@ Une app simple avec 3 à 4 pages :
 
 ### 📋 Prérequis
 
-- **Python 3.12.9** via [pyenv](https://github.com/pyenv/pyenv)
+- **Python 3.10.6** via [pyenv](https://github.com/pyenv/pyenv)
 - **Git**
 - **Docker** et **Docker Compose** (optionnel)
 
@@ -106,11 +106,11 @@ Une app simple avec 3 à 4 pages :
 git clone https://github.com/RonanB400/decp_ml.git
 cd decp_ml
 
-# Installer Python 3.12.9 avec pyenv (si pas déjà fait)
-pyenv install 3.12.9
+# Installer Python 3.10.6 avec pyenv (si pas déjà fait)
+pyenv install 3.10.6
 
 # Créer et activer votre environnement virtuel
-pyenv virtualenv 3.12.9 decp_ml_env
+pyenv virtualenv 3.10.6 decp_ml_env
 pyenv local decp_ml_env
 
 # Installer les dépendances

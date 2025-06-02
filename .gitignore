@@ -78,7 +78,6 @@ decp_ml_env/
 # Data files (potentially large/sensitive)
 data/
 *.sqlite
-*.sqlite3
 *.db
 *.csv.gz
 *.parquet
