@@ -156,6 +156,7 @@ docker-compose up --build
 ## 📁 Structure du projet
 
 ```
+
 decp_ml/
 ├── 📂 data/                    # Données sources (SQLite, CSV)
 │   └── datalab.sqlite         # Base traitée
