@@ -31,3 +31,6 @@ tqdm==4.67.1
 
 # Data loading and preprocessing
 requests==2.32.3
+
+#Pour utiliser les fichiers notebook ?
+#ipykernel
