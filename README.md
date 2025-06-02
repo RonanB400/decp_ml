@@ -158,7 +158,6 @@ docker-compose up --build
 ```
 decp_ml/
 ├── 📂 data/                    # Données sources (SQLite, CSV)
-│   ├── decp.sqlite            # Base DECP principale
 │   └── datalab.sqlite         # Base traitée
 ├── 📂 notebooks/              # Analyses exploratoires
 ├── 📂 src/                    # Code source principal
@@ -187,6 +186,7 @@ decp_ml/
 ├── docker-compose.yml         # Configuration Docker
 ├── Dockerfile                 # Image Docker
 └── README.md                  # Ce fichier
+
 ```
 
 ---
