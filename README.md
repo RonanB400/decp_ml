@@ -181,6 +181,8 @@ decp_ml/
 ├── .env.example               # Template des variables d'environnement
 ├── .envrc.example             # Template direnv (optionnel)
 ├── .python-version            # Version Python pour pyenv
+├── .gitignore                 # gitignore
+├── Makefile                   # Commandes bash groupées
 ├── requirements.txt           # Dépendances Python
 ├── docker-compose.yml         # Configuration Docker
 ├── Dockerfile                 # Image Docker
