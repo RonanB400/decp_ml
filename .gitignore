@@ -76,13 +76,13 @@ decp_ml_env/
 # Data Science & ML
 # =============================================================================
 # Data files (potentially large/sensitive)
-data/
-*.sqlite
-*.db
-*.csv.gz
-*.parquet
-*.pickle
-*.pkl
+# data/
+# *.sqlite
+# *.db
+# *.csv.gz
+# *.parquet
+# *.pickle
+# *.pkl
 
 # Model files (can be large)
 models/*.pkl
