@@ -7,7 +7,6 @@ import pandas as pd
 import os
 
 
-
 def codeCPV_description(data_raw):
     """
     Add CPV descriptions to the raw data by matching CPV codes.
@@ -21,7 +20,7 @@ def codeCPV_description(data_raw):
     """
     # Load CPV reference data
     cpv_path = os.path.join(os.path.dirname(os.getcwd()), 
-                            'data', 'cpv_2008_ver_2013_FR.csv')
+                            'docs', 'cpv_2008_ver_2013_FR.csv')
     df_cpv = pd.read_csv(cpv_path)
     
     # Find missing CPV codes (not in reference data)
