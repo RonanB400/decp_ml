@@ -2,6 +2,9 @@ import pandas as pd
 from sklearn.preprocessing import OneHotEncoder
 
 
+
+def encoding_
+
 def preprocess_categorielle(X, columns):
     """
     Preprocess categorical features using OneHotEncoder.
