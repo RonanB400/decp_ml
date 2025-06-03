@@ -29,8 +29,12 @@ def cpv_2et3 (df):
     return df
 
 
-#date --> to datetime --> juste année ?
-
+#créer une colonne 'année' en version datetime
+def annee(df):
+    df['annee'] = df['dateNotification'].str[:4]
+    df['annee'] = pd.to_datetime(df['annee'], errors='ignore')
+    df = df[df['annee'] > '2018']
+    return df
 
 
 #scaling dureeMois & offresRecues
