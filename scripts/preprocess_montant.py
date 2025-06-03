@@ -6,11 +6,9 @@ from preprocess_cpv import extract_cpv_hierarchy_level, add_cpv_hierarchy_column
 #selection des colonnes
 def columns_selection(df):
     df = df[['procedure', 'dureeMois','nature', 'formePrix', 'offresRecues', 'ccag',
-          'sousTraitanceDeclaree', 'typeGroupementOperateurs', 'tauxAvance', 'origineUE',
-          'origineFrance', 'idAccordCadre']]
+          'sousTraitanceDeclaree', 'typeGroupementOperateurs', 'tauxAvance',
+          'origineFrance', 'idAccordCadre', 'dateNotification']]
     return df
-
-#df = df
 
 
 #retrait des marchés supérieurs à 50 millions et inférieur à 20 milles.
@@ -25,11 +23,9 @@ def cpv_2et3 (df):
     df = add_cpv_hierarchy_column(df)
     df3 = add_cpv_hierarchy_column(df, level=3)
     df["codeCPV_3"] = df3["codeCPV_3"]
-    if df["codeCPV_2"] == "45000000":
-        df["codeCPV_2"] = df["codeCPV_3"]
-    if df["codeCPV_2"] == "71000000":
-        df["codeCPV_2"] = df["codeCPV_3"]
-
+    df['codeCPV_2'] = df.apply(lambda row: row['codeCPV_3'] if row['codeCPV_2'] == '45000000' else row['codeCPV_2'], axis=1)
+    df['codeCPV_2'] = df.apply(lambda row: row['codeCPV_3'] if row['codeCPV_2'] == '71000000' else row['codeCPV_2'], axis=1)
+    df.drop(columns=['codeCPV_3'], inplace=True)
     return df
 
 
@@ -41,4 +37,5 @@ def cpv_2et3 (df):
 
 
 
-#missing data
+
+#missing data --> Loïc
