@@ -263,7 +263,7 @@ def process_cpv_data(data_raw, levels=None, save_csv=True, output_path=None):
     
     Args:
         data_raw (pd.DataFrame): Raw data containing 'codeCPV' column
-        levels (list of int, optional): List of hierarchy levels to add 
+        levels (list of int, optional): List of hierarchy levels to add     
                                       (2-5). Defaults to [2, 3, 4, 5]
         save_csv (bool, optional): Whether to save the result to CSV. 
                                  Defaults to True
