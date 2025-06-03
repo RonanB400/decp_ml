@@ -5,6 +5,7 @@ This script is used to add CPV descriptions to the raw data by matching CPV code
 # Import libraries
 import pandas as pd
 import os
+import sqlite3
 
 
 def codeCPV_description(data_raw):
@@ -19,7 +20,7 @@ def codeCPV_description(data_raw):
                      CPV descriptions in French
     """
     # Load CPV reference data
-    cpv_path = os.path.join(os.path.dirname(os.getcwd()), 
+    cpv_path = os.path.join(os.path.dirname(__file__), '..', 
                             'docs', 'cpv_2008_ver_2013_FR.csv')
     df_cpv = pd.read_csv(cpv_path)
     
@@ -234,7 +235,9 @@ def codeCPV_group(data_cpv, levels=None, save_csv=True, output_path=None,
     if save_csv:
         try:
             if output_path is None:
-                data_path = os.path.join(os.path.dirname(os.getcwd()), 'data')
+                data_path = os.path.join(
+                    os.path.dirname(__file__), '..', 'data'
+                )
                 output_path = os.path.join(data_path, 'data_cpv.csv')
             
             # Create directory if it doesn't exist
@@ -248,3 +251,97 @@ def codeCPV_group(data_cpv, levels=None, save_csv=True, output_path=None,
             print(f"Warning: Failed to save CSV file: {e}")
     
     return data_cpv_new
+
+
+def process_cpv_data(data_raw, levels=None, save_csv=True, output_path=None):
+    """
+    Complete CPV processing pipeline: adds descriptions and hierarchy columns.
+    
+    This function combines codeCPV_description and codeCPV_group to provide
+    a complete CPV data processing pipeline. It first adds CPV descriptions
+    by matching codes, then adds hierarchical CPV classification columns.
+    
+    Args:
+        data_raw (pd.DataFrame): Raw data containing 'codeCPV' column
+        levels (list of int, optional): List of hierarchy levels to add 
+                                      (2-5). Defaults to [2, 3, 4, 5]
+        save_csv (bool, optional): Whether to save the result to CSV. 
+                                 Defaults to True
+        output_path (str, optional): Path where to save CSV file. If None,
+                                   saves to '../data/data_cpv.csv'
+    
+    Returns:
+        pd.DataFrame: DataFrame with CPV descriptions and hierarchy columns
+        
+    Raises:
+        KeyError: If 'codeCPV' column doesn't exist in DataFrame
+        ValueError: If any level in levels is not between 2 and 5
+        FileNotFoundError: If output directory doesn't exist and cannot 
+                         be created
+    
+    Example:
+        >>> data = pd.DataFrame({'codeCPV': ['03111900-1', '45000000-7']})
+        >>> result = process_cpv_data(data, levels=[2, 3], save_csv=False)
+        >>> print(result.columns)
+        Index(['codeCPV', 'codeCPV_FR', 'codeCPV_2', 'codeCPV_3'], 
+              dtype='object')
+    """
+    print("Step 1: Adding CPV descriptions...")
+    data_with_descriptions = codeCPV_description(data_raw)
+    
+    print("Step 2: Adding CPV hierarchy columns...")
+    data_with_hierarchy = codeCPV_group(
+        data_with_descriptions, 
+        levels=levels, 
+        save_csv=save_csv, 
+        output_path=output_path
+    )
+    
+    print("CPV processing completed successfully!")
+    return data_with_hierarchy
+
+
+if __name__ == "__main__":
+    # Example usage - loading data from SQLite database
+    try:
+        db_path = os.path.join(
+            os.path.dirname(__file__), 
+            '..', 
+            'data', 
+            'datalab.sqlite'
+        )
+        
+        conn = sqlite3.connect(db_path)
+        db = conn.cursor()
+        query = """
+                SELECT *
+                FROM "data.gouv.fr.2022.clean"
+                """
+
+        print(f"Loading data from database: {db_path}")
+        data_raw = pd.read_sql_query(query, conn)
+        conn.close()
+        
+        # Check if codeCPV column exists
+        if 'codeCPV' not in data_raw.columns:
+            print("Error: 'codeCPV' column not found in the data.")
+            print(f"Available columns: {list(data_raw.columns)}")
+        else:
+            # Process the data with all hierarchy levels
+            result = process_cpv_data(
+                data_raw, 
+                levels=[2, 3, 4, 5], 
+                save_csv=True
+            )
+            
+            print(f"Processing completed. Final data shape: "
+                  f"{result.shape}")
+            print(f"Columns in final data: {list(result.columns)}")
+            
+    except sqlite3.Error as e:
+        print(f"Database error occurred: {e}")
+        print("Please check your database file and table name.")
+    except Exception as e:
+        print(f"Error occurred during processing: {e}")
+        print("Please check your database connection and data.")
+
