@@ -103,7 +103,7 @@ Une app simple avec 3 à 4 pages :
 ```bash
 # Cloner le dépôt
 # Se positionner dans le dossier souhaité dans le terminal
-git clone https://github.com/RonanB400/decp_ml.git
+git clone git@github.com:RonanB400/decp_ml.git
 cd decp_ml
 
 # Installer Python 3.10.6 avec pyenv (si pas déjà fait)
