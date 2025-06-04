@@ -34,17 +34,6 @@ class TauxAvanceCategorizer(BaseEstimator, TransformerMixin):
                                                 labels=self.labels)
         return X_transformed.drop(columns=['tauxAvance'])
 
-class MissingValues(BaseEstimator, TransformerMixin):
-    def __init__(self):
-        pass
-
-    def fit(self, X, y=None):
-        return self
-
-    def transform(self, X):
-        from scripts.preprocess_missing_values import clean_missing_values
-        return clean_missing_values(X)
-
 
 class LogTransformer(BaseEstimator, TransformerMixin):
     def __init__(self, columns):
@@ -58,6 +47,28 @@ class LogTransformer(BaseEstimator, TransformerMixin):
         for col in self.columns:
             X_transformed[col] = np.log1p(X_transformed[col])
         return X_transformed
+
+
+class LogTransformer(BaseEstimator, TransformerMixin):
+    def __init__(self, columns=None):
+        # columns is just for reference, we won't use it for indexing
+        self.columns = columns
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        # If X is a DataFrame with named columns
+        if hasattr(X, 'columns'):
+            X_transformed = X.copy()
+            for col in self.columns:
+                if col in X_transformed.columns:
+                    X_transformed[col] = np.log1p(X_transformed[col])
+            return X_transformed
+        else:
+            # If X is a numpy array, transform all values
+            # Assuming we're only receiving numeric data when X is an array
+            return np.log1p(X)
 
 class InitTransformer(BaseEstimator, TransformerMixin):
     def __init__(self, cat=['anomalie', 'pred_motant', 'marche_sim'],
@@ -75,8 +86,8 @@ class InitTransformer(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X):
-        from scripts.preprocess_missing_values import columns_selection
-        return columns_selection(X, self.cat, self.min, self.max, self.top_n, self.level)()
+        from scripts.preprocess_init import columns_selection
+        return columns_selection(X, self.cat, self.min, self.max, self.top_n, self.level)
 
 
 class DureeMoisDropper(BaseEstimator, TransformerMixin):
@@ -96,17 +107,11 @@ def create_preprocessing_pipeline_init(cat, min=20000, max=50000000, top_n=40, l
     sklearn.pipeline.Pipeline
         Pipeline de prétraitement complet
     """
-    from scripts.preprocess_init import InitTransformer
 
     preprocessing_pipeline = Pipeline([
         ('id_accord_encoder', IdAccordCadreEncoder()),
         ('taux_avance_categorizer', TauxAvanceCategorizer()),
-        ('outliers_feature_rows_selector', InitTransformer(
-            cat=cat,
-            min=min,
-            max=max,
-            top_n=40,
-            level=2))
+        ('outliers_feature_rows_selector', InitTransformer(cat=cat, min=min, max=max, top_n=top_n, level=level)),
      ])
     return preprocessing_pipeline
 
@@ -115,31 +120,48 @@ def create_preprocessing_pipeline_init(cat, min=20000, max=50000000, top_n=40, l
 def create_preprocessing_pipeline_follow():
     """
     Crée un pipeline sklearn pour le prétraitement des données de marchés publics.
+    Ignores columns that aren't present in the input DataFrame.
     """
     numerical_columns = ['montant', 'dureeMois', 'offresRecues']
     categorical_columns = ['nature', 'procedure', 'formePrix', 'marcheInnovant', 'ccag',
                           'sousTraitanceDeclaree', 'typeGroupementOperateurs', 'origineFrance',
-                          'idAccordCadre', 'codeCPV_2', 'codeCPV_3', 'tauxAvance_cat']
+                          'idAccordCadre', 'codeCPV_2', 'tauxAvance_cat']
+
+    class ColumnSelector(BaseEstimator, TransformerMixin):
+        def __init__(self, columns):
+            self.columns = columns
+
+        def fit(self, X, y=None):
+            return self
+
+        def transform(self, X):
+            available_columns = [col for col in self.columns if col in X.columns]
+            return X[available_columns]
 
     preprocessing_pipeline = Pipeline([
        ('duree_mois_dropper', DureeMoisDropper()),
-       ('log_transformer', LogTransformer(numerical_columns)),
+       ('column_selector', ColumnSelector(numerical_columns + categorical_columns)),
        ('column_transformer', ColumnTransformer([
            ('offres_recues_pipeline', Pipeline([
                ('imputer', SimpleImputer(strategy='median')),
+               # Log transform after imputation
+               ('log_transform', LogTransformer(['offresRecues'])),
                ('scaler', StandardScaler())
-           ]), ['offresRecues']),
+           ]), [col for col in ['offresRecues'] if col in numerical_columns]),
 
            ('other_num_pipeline', Pipeline([
                ('imputer', SimpleImputer(strategy='constant', fill_value=0.0)),
+               # Log transform after imputation
+               ('log_transform', LogTransformer(['montant', 'dureeMois'])),
                ('scaler', StandardScaler())
-           ]), ['montant', 'dureeMois']),
+           ]), [col for col in ['montant', 'dureeMois'] if col in numerical_columns]),
 
            ('cat_pipeline', Pipeline([
-               ('imputer', SimpleImputer(strategy='constant', fill_value=0.0)),
+               # Use string imputation for categorical columns to avoid type issues
+               ('imputer', SimpleImputer(strategy='constant', fill_value='missing')),
                ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
-           ]), categorical_columns)
-       ]))
+           ]), [col for col in categorical_columns if col in categorical_columns])
+       ], remainder='drop'))
     ])
 
     return preprocessing_pipeline
