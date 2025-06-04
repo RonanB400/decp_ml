@@ -23,7 +23,7 @@ def columns_selection(df, cat):
 
 
 #retrait des marchés supérieurs à 50 millions et inférieur à 20 milles.
-def drop_outliers(df, min=20000, max=50000000):
+def drop_outliers(df, min=40000, max=50000000):
     df.drop(df[df['montant'] > max].index, inplace=True)
     df.drop(df[df['montant'] < min].index, inplace=True)
     df.drop(df[df['dureeMois'] == 999].index, inplace=True)
