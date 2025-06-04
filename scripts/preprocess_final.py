@@ -96,6 +96,7 @@ def create_preprocessing_pipeline_init(cat, min=20000, max=50000000, top_n=40, l
     sklearn.pipeline.Pipeline
         Pipeline de prétraitement complet
     """
+    from scripts.preprocess_init import InitTransformer
 
     preprocessing_pipeline = Pipeline([
         ('id_accord_encoder', IdAccordCadreEncoder()),
