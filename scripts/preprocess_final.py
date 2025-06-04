@@ -135,7 +135,7 @@ def create_preprocessing_pipeline_follow():
            ]), ['montant', 'dureeMois']),
 
            ('cat_pipeline', Pipeline([
-               ('imputer', SimpleImputer(strategy='constant', fill_value=0.0),
+               ('imputer', SimpleImputer(strategy='constant', fill_value=0.0)),
                ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
            ]), categorical_columns)
        ]))

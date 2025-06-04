@@ -27,18 +27,12 @@ def clean_missing_values(df):
     df_clean['tauxAvance'] = avance_imputer.fit_transform(df_clean[['tauxAvance']])
 
     # offresRecues
-    #mediane !!!!!
-    offres_recues_imputer = SimpleImputer(strategy='constant', fill_value=1.0)
+    offres_recues_imputer = SimpleImputer(strategy='median')
     df_clean['offresRecues'] = offres_recues_imputer.fit_transform(df_clean[['offresRecues']])
 
     # sousTraitanceDeclaree
     sous_traitance_imputer = SimpleImputer(strategy='constant', fill_value=0.0)
     df_clean['sousTraitanceDeclaree'] = sous_traitance_imputer.fit_transform(df_clean[['sousTraitanceDeclaree']])
-
-    # tauxAvance
-    #on pourrai faire un imputer en fonction deu marché
-    taux_avance_imputer = SimpleImputer(strategy='constant', fill_value=0.0)
-    df_clean['tauxAvance'] = taux_avance_imputer.fit_transform(df_clean[['tauxAvance']])
 
     # origineFrance
     origine_france_imputer = SimpleImputer(strategy='constant', fill_value=0.0)
