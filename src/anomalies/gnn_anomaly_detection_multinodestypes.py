@@ -336,17 +336,40 @@ class GNNAnomalyDetector:
         """Create a TensorFlow GNN graph from our data."""
         logger.info("Creating TensorFlow GNN graph...")
         
-        # Create the graph tensor with single node set
+        # Split nodes and features by type
+        node_types = graph_data['node_types']
+        buyer_mask = node_types == 0
+        supplier_mask = node_types == 1
+        
+        # Get buyer and supplier features
+        buyer_features = node_features_scaled[buyer_mask]
+        supplier_features = node_features_scaled[supplier_mask]
+        
+        # Get the number of buyers to adjust edge indices
+        num_buyers = np.sum(buyer_mask)
+        
+        # Adjust edge indices: buyers stay as is, suppliers get their original index minus num_buyers
+        edges = graph_data['edges'].copy()
+        buyer_edges = edges[:, 0]  # Source nodes (buyers)
+        supplier_edges = edges[:, 1] - num_buyers  # Target nodes (suppliers, adjusted)
+        
+        # Create the graph tensor with separate node sets
         graph_tensor = tfgnn.GraphTensor.from_pieces(
             node_sets={
-                "entities": tfgnn.NodeSet.from_fields(
+                "acheteur": tfgnn.NodeSet.from_fields(
                     features={
-                        "features": tf.constant(node_features_scaled,
-                                                dtype=tf.float32),
-                        "node_type": tf.constant(graph_data['node_types'],
-                                               dtype=tf.int32)
+                        "features": tf.constant(buyer_features,
+                                                dtype=tf.float32)
                     },
-                    sizes=tf.constant([len(node_features_scaled)],
+                    sizes=tf.constant([len(buyer_features)],
+                                      dtype=tf.int32)
+                ),
+                "titulaire": tfgnn.NodeSet.from_fields(
+                    features={
+                        "features": tf.constant(supplier_features,
+                                                dtype=tf.float32)
+                    },
+                    sizes=tf.constant([len(supplier_features)],
                                       dtype=tf.int32)
                 )
             },
@@ -359,11 +382,11 @@ class GNNAnomalyDetector:
                     sizes=tf.constant([len(edge_features_scaled)],
                                       dtype=tf.int32),
                     adjacency=tfgnn.Adjacency.from_indices(
-                        source=("entities",
-                                tf.constant(graph_data['edges'][:, 0],
+                        source=("acheteur",
+                                tf.constant(buyer_edges,
                                             dtype=tf.int32)),
-                        target=("entities",
-                                tf.constant(graph_data['edges'][:, 1],
+                        target=("titulaire",
+                                tf.constant(supplier_edges,
                                             dtype=tf.int32))
                     )
                 )
@@ -373,35 +396,41 @@ class GNNAnomalyDetector:
         return graph_tensor
     
     def build_model(self, node_feature_dim: int,
-                    edge_feature_dim: int) -> tf.keras.Model:
+                   edge_feature_dim: int) -> tf.keras.Model:
         """Build the GNN model for anomaly detection."""
         logger.info("Building GNN model...")
         
-        # Create input spec with single node set using correct API
+        # Create input spec with separate node sets
         input_spec = tfgnn.GraphTensorSpec.from_piece_specs(
             node_sets_spec={
-                "entities": tfgnn.NodeSetSpec.from_field_specs(
+                "acheteur": tfgnn.NodeSetSpec(
                     features_spec={
                         "features": tf.TensorSpec(
-                            shape=(None, node_feature_dim),
-                            dtype=tf.float32),
-                        "node_type": tf.TensorSpec(shape=(None,),
-                                                   dtype=tf.int32)
+                            shape=[None, node_feature_dim],
+                            dtype=tf.float32)
                     },
-                    sizes_spec=tf.TensorSpec(shape=(1,), dtype=tf.int32)
+                    sizes_spec=tf.TensorSpec(shape=[None], dtype=tf.int32)
+                ),
+                "titulaire": tfgnn.NodeSetSpec(
+                    features_spec={
+                        "features": tf.TensorSpec(
+                            shape=[None, node_feature_dim],
+                            dtype=tf.float32)
+                    },
+                    sizes_spec=tf.TensorSpec(shape=[None], dtype=tf.int32)
                 )
             },
             edge_sets_spec={
-                "contracts": tfgnn.EdgeSetSpec.from_field_specs(
+                "contracts": tfgnn.EdgeSetSpec(
                     features_spec={
                         "features": tf.TensorSpec(
-                            shape=(None, edge_feature_dim),
+                            shape=[None, edge_feature_dim],
                             dtype=tf.float32)
                     },
-                    sizes_spec=tf.TensorSpec(shape=(1,), dtype=tf.int32),
-                    adjacency_spec=tfgnn.AdjacencySpec.from_incident_node_sets(
-                        source_node_set="entities",
-                        target_node_set="entities"
+                    sizes_spec=tf.TensorSpec(shape=[None], dtype=tf.int32),
+                    adjacency_spec=tfgnn.AdjacencySpec(
+                        source_node_set="acheteur",
+                        target_node_set="titulaire"
                     )
                 )
             }
@@ -411,32 +440,63 @@ class GNNAnomalyDetector:
         input_graph = tf.keras.layers.Input(type_spec=input_spec)
         graph = input_graph
         
-        # Initialize hidden state for the first layer using actual features
-        graph = tfgnn.keras.layers.MapFeatures(
-            node_sets_fn=lambda node_set, node_set_name: node_set["features"]
-        )(graph)
-        
         # GNN layers
         for i in range(self.num_layers):
             graph = tfgnn.keras.layers.GraphUpdate(
                 node_sets={
-                    "entities": tfgnn.keras.layers.NodeSetUpdate(
-                        {"contracts": tfgnn.keras.layers.SimpleConv(
-                            sender_edge_feature="features",
-                            message_fn=tf.keras.layers.Dense(self.hidden_dim),
-                            reduce_type="sum",
-                            receiver_tag=tfgnn.TARGET)},
-                        tfgnn.keras.layers.NextStateFromConcat(
-                            tf.keras.layers.Dense(self.hidden_dim)))}
+                    "acheteur": tfgnn.keras.layers.NodeSetUpdate(
+                        edge_set_inputs={
+                            "contracts": tfgnn.keras.layers.SimpleConv(
+                                tf.keras.Sequential([
+                                    tf.keras.layers.Dense(
+                                        self.hidden_dim, activation="relu"),
+                                    tf.keras.layers.Dropout(0.2),
+                                    tf.keras.layers.Dense(self.hidden_dim)
+                                ]),
+                                receiver_tag=tfgnn.SOURCE
+                            )
+                        },
+                        next_state=tf.keras.Sequential([
+                            tf.keras.layers.Dense(
+                                self.hidden_dim, activation="relu"),
+                            tf.keras.layers.Dropout(0.2),
+                            tf.keras.layers.Dense(self.hidden_dim)
+                        ])
+                    ),
+                    "titulaire": tfgnn.keras.layers.NodeSetUpdate(
+                        edge_set_inputs={
+                            "contracts": tfgnn.keras.layers.SimpleConv(
+                                tf.keras.Sequential([
+                                    tf.keras.layers.Dense(
+                                        self.hidden_dim, activation="relu"),
+                                    tf.keras.layers.Dropout(0.2),
+                                    tf.keras.layers.Dense(self.hidden_dim)
+                                ]),
+                                receiver_tag=tfgnn.TARGET
+                            )
+                        },
+                        next_state=tf.keras.Sequential([
+                            tf.keras.layers.Dense(
+                                self.hidden_dim, activation="relu"),
+                            tf.keras.layers.Dropout(0.2),
+                            tf.keras.layers.Dense(self.hidden_dim)
+                        ])
+                    )
+                }
             )(graph)
         
-        # Extract node features
-        node_features = graph.node_sets["entities"][tfgnn.HIDDEN_STATE]
+        # Extract node features for both node types
+        acheteur_features = graph.node_sets["acheteur"]["features"]
+        titulaire_features = graph.node_sets["titulaire"]["features"]
+        
+        # Combine features for processing (maintain original order)
+        combined_features = tf.concat([acheteur_features, titulaire_features], 
+                                      axis=0)
         
         # Create embeddings
         embeddings = tf.keras.layers.Dense(
             self.output_dim, activation="tanh",
-            name="embeddings")(node_features)
+            name="embeddings")(combined_features)
         
         # Reconstruction layer for anomaly detection
         reconstructed = tf.keras.layers.Dense(
@@ -502,9 +562,14 @@ class GNNAnomalyDetector:
         predictions = self.model.predict(self.graph_tensor)
         reconstructed = predictions['reconstructed']
         
-        # Calculate reconstruction error
-        original_features = (self.graph_tensor.node_sets['entities']
+        # Calculate reconstruction error for original combined features
+        # Get original features in the same order (buyers first, then suppliers)
+        acheteur_features = (self.graph_tensor.node_sets['acheteur']
+                             ['features'].numpy())
+        titulaire_features = (self.graph_tensor.node_sets['titulaire']
                               ['features'].numpy())
+        original_features = np.concatenate([acheteur_features, 
+                                            titulaire_features], axis=0)
         
         reconstruction_error = np.mean((original_features - reconstructed) ** 2,
                                        axis=1)
