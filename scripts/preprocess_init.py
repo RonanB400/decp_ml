@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from preprocess_cpv import extract_cpv_hierarchy_level, add_cpv_hierarchy_column
+from scripts.preprocess_cpv import extract_cpv_hierarchy_level, add_cpv_hierarchy_column
 
 #retrait des marchés supérieurs à 50 millions et inférieur à 20 milles.
 def drop_outliers(df, min=20000, max=50000000):
