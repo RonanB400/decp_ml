@@ -2,7 +2,6 @@ import pandas as pd
 from sklearn.preprocessing import OneHotEncoder
 
 
-
 def encoding_idAccordCadre(X):
     """
     Encodes the idAccordCadre column by replacing non-null values with 1 and null values with 0.
