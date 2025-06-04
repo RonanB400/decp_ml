@@ -79,6 +79,13 @@ class InitTransformer(BaseEstimator, TransformerMixin):
         return columns_selection(X, self.cat, self.min, self.max, self.top_n, self.level)()
 
 
+class DureeMoisDropper(BaseEstimator, TransformerMixin):
+        def fit(self, X, y=None):
+            return self
+
+        def transform(self, X):
+            return X.dropna(subset=['dureeMois'])
+
 
 def create_preprocessing_pipeline_init(cat, min=20000, max=50000000, top_n=40, level=2):
     """
@@ -93,14 +100,14 @@ def create_preprocessing_pipeline_init(cat, min=20000, max=50000000, top_n=40, l
     preprocessing_pipeline = Pipeline([
         ('id_accord_encoder', IdAccordCadreEncoder()),
         ('taux_avance_categorizer', TauxAvanceCategorizer()),
-        ('missing_values_handler', MissingValues()),
         ('outliers_feature_rows_selector', InitTransformer(
-            cat=,
+            cat=cat,
             min=min,
             max=max,
             top_n=40,
             level=2))
      ])
+    return preprocessing_pipeline
 
 
 
@@ -111,40 +118,27 @@ def create_preprocessing_pipeline_follow():
     numerical_columns = ['montant', 'dureeMois', 'offresRecues']
     categorical_columns = ['nature', 'procedure', 'formePrix', 'marcheInnovant', 'ccag',
                           'sousTraitanceDeclaree', 'typeGroupementOperateurs', 'origineFrance',
-                          'idAccordCadre', 'codeCPV_2', 'tauxAvance_cat']
+                          'idAccordCadre', 'codeCPV_2', 'codeCPV_3', 'tauxAvance_cat']
 
     preprocessing_pipeline = Pipeline([
-        ('log_transformer', LogTransformer(numerical_columns)),
-        ('column_transformer', ColumnTransformer([
-            ('num_pipeline', Pipeline([
-                ('imputer', SimpleImputer(strategy='median')),
-                ('scaler', StandardScaler())
-            ]), numerical_columns),
-            ('cat_pipeline', Pipeline([
-                ('imputer', SimpleImputer(strategy='constant', fill_value='missing')),
-                ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
-            ]), categorical_columns)
-        ]))
+       ('duree_mois_dropper', DureeMoisDropper()),
+       ('log_transformer', LogTransformer(numerical_columns)),
+       ('column_transformer', ColumnTransformer([
+           ('offres_recues_pipeline', Pipeline([
+               ('imputer', SimpleImputer(strategy='median')),
+               ('scaler', StandardScaler())
+           ]), ['offresRecues']),
+
+           ('other_num_pipeline', Pipeline([
+               ('imputer', SimpleImputer(strategy='constant', fill_value=0.0)),
+               ('scaler', StandardScaler())
+           ]), ['montant', 'dureeMois']),
+
+           ('cat_pipeline', Pipeline([
+               ('imputer', SimpleImputer(strategy='constant', fill_value=0.0),
+               ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
+           ]), categorical_columns)
+       ]))
     ])
 
     return preprocessing_pipeline
-
-# Fonction originale maintenue pour compatibilité
-def preprocessing_pipeline(df, top_n=40):
-    """
-    Pipeline complet de prétraitement des données de marchés publics.
-
-    Paramètres:
-    -----------
-    df : pandas.DataFrame
-        DataFrame contenant les données brutes
-    top_n : int, optional (default=40)
-        Nombre de groupes CPV à conserver
-
-    Retourne:
-    ---------
-    pandas.DataFrame
-        DataFrame prétraité prêt pour le clustering
-    """
-    pipeline = create_preprocessing_pipeline()
-    return pipeline.fit_transform(df)
