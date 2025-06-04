@@ -42,10 +42,4 @@ def clean_missing_values(df):
     origine_france_imputer = SimpleImputer(strategy='constant', fill_value=0.0)
     df_clean['origineFrance'] = origine_france_imputer.fit_transform(df_clean[['origineFrance']])
 
-    # Print summary
-    missing_counts = df_clean[[
-        'dureeMois', 'marcheInnovant', 'tauxAvance', 'offresRecues',
-        'sousTraitanceDeclaree', 'tauxAvance', 'origineFrance']].isnull().sum()
-    print(f"Remaining missing values:\n{missing_counts}")
-
     return df_clean
