@@ -373,9 +373,24 @@ class GNNAnomalyDetector:
         return graph_tensor
     
     def build_model(self, node_feature_dim: int,
-                    edge_feature_dim: int) -> tf.keras.Model:
-        """Build the GNN model for anomaly detection."""
+                    edge_feature_dim: int,
+                    l2_regularization: float = 5e-4,
+                    dropout_rate: float = 0.3) -> tf.keras.Model:
+        """Build the GNN model for anomaly detection with proper regularization."""
         logger.info("Building GNN model...")
+        
+        # Helper function for regularized dense layers
+        def dense_with_regularization(units, activation="relu"):
+            """Dense layer with L2 regularization and dropout."""
+            regularizer = tf.keras.regularizers.l2(l2_regularization)
+            return tf.keras.Sequential([
+                tf.keras.layers.Dense(
+                    units,
+                    activation=activation,
+                    kernel_regularizer=regularizer,
+                    bias_regularizer=regularizer),
+                tf.keras.layers.Dropout(dropout_rate)
+            ])
         
         # Create input spec with single node set using correct API
         input_spec = tfgnn.GraphTensorSpec.from_piece_specs(
@@ -411,38 +426,49 @@ class GNNAnomalyDetector:
         input_graph = tf.keras.layers.Input(type_spec=input_spec)
         graph = input_graph
         
-        # Initialize hidden state for the first layer using actual features
+        # Initialize hidden states for both nodes and edges
+        def set_initial_node_state(node_set, *, node_set_name):
+            return tf.keras.layers.Dense(self.hidden_dim)(node_set["features"])
+            
+        def set_initial_edge_state(edge_set, *, edge_set_name):
+            return tf.keras.layers.Dense(self.hidden_dim)(edge_set["features"])
+            
         graph = tfgnn.keras.layers.MapFeatures(
-            node_sets_fn=lambda node_set, node_set_name: node_set["features"]
+            node_sets_fn=set_initial_node_state,
+            edge_sets_fn=set_initial_edge_state
         )(graph)
         
-        # GNN layers
+        # GNN message passing layers with regularization
         for i in range(self.num_layers):
             graph = tfgnn.keras.layers.GraphUpdate(
                 node_sets={
                     "entities": tfgnn.keras.layers.NodeSetUpdate(
                         {"contracts": tfgnn.keras.layers.SimpleConv(
-                            sender_edge_feature="features",
-                            message_fn=tf.keras.layers.Dense(self.hidden_dim),
+                            sender_edge_feature=tfgnn.HIDDEN_STATE,
+                            message_fn=dense_with_regularization(self.hidden_dim),
                             reduce_type="sum",
                             receiver_tag=tfgnn.TARGET)},
                         tfgnn.keras.layers.NextStateFromConcat(
-                            tf.keras.layers.Dense(self.hidden_dim)))}
+                            dense_with_regularization(self.hidden_dim)))}
             )(graph)
         
-        # Extract node features
+        # Extract final node representations
         node_features = graph.node_sets["entities"][tfgnn.HIDDEN_STATE]
         
-        # Create embeddings
-        embeddings = tf.keras.layers.Dense(
-            self.output_dim, activation="tanh",
-            name="embeddings")(node_features)
+        # Create embeddings with regularization
+        embeddings = dense_with_regularization(
+            self.output_dim, activation="tanh")(node_features)
+        embeddings = tf.keras.layers.Lambda(
+            lambda x: x, name="embeddings")(embeddings)
         
-        # Reconstruction layer for anomaly detection
-        reconstructed = tf.keras.layers.Dense(
+        # Reconstruction pathway for anomaly detection
+        reconstructed = dense_with_regularization(
             self.hidden_dim, activation="relu")(embeddings)
+        # Final reconstruction layer without dropout to preserve reconstruction quality
         reconstructed = tf.keras.layers.Dense(
-            node_feature_dim, name="reconstructed")(reconstructed)
+            node_feature_dim, 
+            kernel_regularizer=tf.keras.regularizers.l2(l2_regularization),
+            name="reconstructed")(reconstructed)
         
         model = tf.keras.Model(
             inputs=input_graph,
