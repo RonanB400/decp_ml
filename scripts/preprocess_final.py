@@ -199,6 +199,7 @@ class DureeMoisDropper(BaseEstimator, TransformerMixin):
         return X.dropna(subset=['dureeMois'])
 
 
+
 class StringConverter(BaseEstimator, TransformerMixin):
     """
     Transformer that converts all values to strings.
