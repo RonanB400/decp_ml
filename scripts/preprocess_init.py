@@ -1,6 +1,5 @@
-import numpy as np
 import pandas as pd
-from scripts.preprocess_cpv import extract_cpv_hierarchy_level, add_cpv_hierarchy_column
+from scripts.preprocess_cpv import add_cpv_hierarchy_column
 
 #retrait des marchés supérieurs à 50 millions et inférieur à 20 milles.
 def drop_outliers(df, min=20000, max=50000000):
@@ -30,6 +29,7 @@ def annee(df):
 
 #selection des colonnes
 def columns_selection(df, cat, min=20000, max=50000000, top_n=40, level=2):
+
     if cat == 'pred_montant':
         #selection des colonnes
         df = df[['procedure', 'dureeMois','nature', 'formePrix', 'offresRecues', 'ccag',
@@ -47,7 +47,7 @@ def columns_selection(df, cat, min=20000, max=50000000, top_n=40, level=2):
         #ajout de la colonne année
         df = annee(df)
         #suppression des outiliers (montant sup, inf et dureeMois sup)
-        df = drop_outliers(df, min=min, max=max)
+        #df = drop_outliers(df, min=min, max=max)
         return df
 
     elif cat == 'marche_sim':
@@ -81,4 +81,4 @@ def columns_selection(df, cat, min=20000, max=50000000, top_n=40, level=2):
         return df
 
     else:
-        return f"Error, cat not in 'montant', 'marche_sim', 'anomalie'."
+        return "Error, cat not in 'montant', 'marche_sim', 'anomalie'."
