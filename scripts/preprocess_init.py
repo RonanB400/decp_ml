@@ -33,8 +33,8 @@ def columns_selection(df, cat, min=20000, max=50000000, top_n=40, level=2):
     if cat == 'pred_montant':
         #selection des colonnes
         df = df[['procedure', 'dureeMois','nature', 'formePrix', 'offresRecues', 'ccag',
-            'sousTraitanceDeclaree', 'typeGroupementOperateurs', 'tauxAvance',
-            'origineFrance', 'idAccordCadre', 'dateNotification', 'marcheInnovant', 'codeCPV', 'txAvance_cat']]
+            'sousTraitanceDeclaree', 'typeGroupementOperateurs', 'tauxAvance_cat',
+            'origineFrance', 'idAccordCadre', 'dateNotification', 'marcheInnovant', 'codeCPV']]
         #ajout de la colonne codeCPV_2
         df = cpv_2et3(df)
         #drop cpv moins representés
@@ -53,8 +53,8 @@ def columns_selection(df, cat, min=20000, max=50000000, top_n=40, level=2):
     elif cat == 'marche_sim':
         #selection des colonnes
         df = df[['procedure', 'dureeMois','nature', 'formePrix', 'offresRecues', 'ccag',
-            'sousTraitanceDeclaree', 'typeGroupementOperateurs', 'tauxAvance',
-            'origineFrance', 'idAccordCadre', 'montant', 'marcheInnovant', 'codeCPV', 'txAvance_cat']]
+            'sousTraitanceDeclaree', 'typeGroupementOperateurs', 'tauxAvance_cat',
+            'origineFrance', 'idAccordCadre', 'montant', 'marcheInnovant', 'codeCPV']]
         #ajout de la colonne codeCPV_2
         df = add_cpv_hierarchy_column(df, level=level)
         #drop cpv moins representés
