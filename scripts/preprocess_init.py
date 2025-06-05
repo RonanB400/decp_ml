@@ -30,6 +30,7 @@ def annee(df):
 
 #selection des colonnes
 def columns_selection(df, cat, min=20000, max=50000000, top_n=40, level=2):
+
     if cat == 'pred_montant':
         #selection des colonnes
         df = df[['procedure', 'dureeMois','nature', 'formePrix', 'offresRecues', 'ccag',
@@ -47,7 +48,7 @@ def columns_selection(df, cat, min=20000, max=50000000, top_n=40, level=2):
         #ajout de la colonne année
         df = annee(df)
         #suppression des outiliers (montant sup, inf et dureeMois sup)
-        df = drop_outliers(df, min=min, max=max)
+        #df = drop_outliers(df, min=min, max=max)
         return df
 
     elif cat == 'marche_sim':
