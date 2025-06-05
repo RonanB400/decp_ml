@@ -39,6 +39,8 @@ def annee(df):
 #selection des colonnes
 def columns_selection(df, cat, min=20000, max=50000000, top_n=40, level=2):
 
+    df = drop_outliers(df, min=min, max=max)
+
     if cat == 'pred_montant':
         #selection des colonnes
         df = df[['procedure', 'dureeMois','nature', 'formePrix', 'offresRecues', 'ccag',
@@ -55,8 +57,6 @@ def columns_selection(df, cat, min=20000, max=50000000, top_n=40, level=2):
         df.drop(columns=['codeCPV'], inplace=True)
         #ajout de la colonne année
         df = annee(df)
-        #suppression des outiliers (montant sup, inf et dureeMois sup)
-        #df = drop_outliers(df, min=min, max=max)
         return df
 
     elif cat == 'marche_sim':
@@ -73,8 +73,7 @@ def columns_selection(df, cat, min=20000, max=50000000, top_n=40, level=2):
         df = df[df['codeCPV_2'].isin(top_groups.index)]
         #drop colonne codeCPV
         df.drop(columns=['codeCPV'], inplace=True)
-        #suppression des outiliers (montant sup, inf et dureeMois sup)
-        df = drop_outliers(df, min=min, max=max)
+
         return df
 
     elif cat == 'anomalie':
@@ -85,8 +84,7 @@ def columns_selection(df, cat, min=20000, max=50000000, top_n=40, level=2):
         #drop cpv moins representés ? (à ajouter si oui)
         #ajout de la colonne annee
         df = annee(df)
-        #suppression des outiliers (montant sup, inf et dureeMois sup)
-        df = drop_outliers(df, min=min, max=max)
+
         return df
 
     else:
