@@ -194,3 +194,6 @@ assets/*.jpeg
 
 # Zone Identifier files (Windows)
 *.Zone.Identifier
+
+#Ma zone
+scripts/preprocess_final_copy.py
