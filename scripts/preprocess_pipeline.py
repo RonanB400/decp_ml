@@ -141,27 +141,18 @@ class InitTransformer(BaseEstimator, TransformerMixin):
     """
     Transformer for initial data preprocessing and feature selection.
 
-    Applies the columns_selection function from preprocess_init module with
-    the specified parameters to filter and transform the data.
+    Applies the columns_selection function to filter and transform the data
+    based on the specified category.
 
     Parameters
     ----------
-    cat : list or None, default=None
-        Categories to select. If None, defaults to ['anomalie', 'pred_montant',
-        'marche_sim']
-    min : int, default=20000
-        Minimum value threshold for filtering
-    max : int, default=50000000
-        Maximum value threshold for filtering
-    top_n : int, default=40
-        Number of top categories to select
+    cat : str or None, default=None
+        Category to select. If None, defaults to 'pred_montant'.
+        Valid options: 'anomalie', 'pred_montant', 'marche_sim'
     """
-    def __init__(self, cat=None, min=20000, max=50000000, top_n=40):
+    def __init__(self, cat=None):
         self.cat = (cat if cat is not None
-                   else ['anomalie', 'pred_montant', 'marche_sim'])
-        self.min = min
-        self.max = max
-        self.top_n = top_n
+                    else 'pred_montant')
 
     def fit(self, X, y=None):
         return self
@@ -180,8 +171,7 @@ class InitTransformer(BaseEstimator, TransformerMixin):
         pandas DataFrame
             Transformed and filtered data
         """
-        return columns_selection(X, self.cat, self.min, self.max,
-                               self.top_n)
+        return columns_selection(X, self.cat)
 
 
 class StringConverter(BaseEstimator, TransformerMixin):
@@ -228,22 +218,16 @@ class StringConverter(BaseEstimator, TransformerMixin):
                 else np.array([]))
 
 
-def columns_selection(df, cat, min=20000, max=50000000, top_n=40):
+def columns_selection(df, cat):
     """
-    Select and filter columns based on category and parameters.
+    Select and filter columns based on category.
     
     Parameters
     ----------
     df : pandas.DataFrame
         Input DataFrame
-    cat : str or list
+    cat : str
         Category for selection ('pred_montant', 'marche_sim', 'anomalie')
-    min : int, default=20000
-        Minimum value threshold for filtering
-    max : int, default=50000000
-        Maximum value threshold for filtering
-    top_n : int, default=40
-        Number of top categories to select
 
     Returns
     -------
@@ -258,10 +242,7 @@ def columns_selection(df, cat, min=20000, max=50000000, top_n=40):
                  'typeGroupementOperateurs', 'tauxAvance_cat',
                  'origineFrance', 'idAccordCadre', 'dateNotification',
                  'marcheInnovant', 'codeCPV_2']]
-        # drop cpv moins representés
-        cpv_group_counts = df['codeCPV_2'].value_counts()
-        top_groups = cpv_group_counts.nlargest(top_n)
-        df = df[df['codeCPV_2'].isin(top_groups.index)]
+
 
         return df
 
@@ -272,16 +253,19 @@ def columns_selection(df, cat, min=20000, max=50000000, top_n=40):
                  'typeGroupementOperateurs', 'tauxAvance_cat',
                  'origineFrance', 'idAccordCadre', 'montant',
                  'marcheInnovant', 'codeCPV_2']]
-        # drop cpv moins representés
-        cpv_group_counts = df['codeCPV_2'].value_counts()
-        top_groups = cpv_group_counts.nlargest(top_n)
-        df = df[df['codeCPV_2'].isin(top_groups.index)]
 
         return df
 
     elif cat == 'anomalie':
-        # selection des colonnes
-        df = df[['Ronan : à remplir avec les colonnes que tu souhaites']]
+        # selection des colonnes for anomaly detection
+        # TODO: Customize column selection for anomaly detection
+        # For now, using similar structure to marche_sim
+        df = df[['procedure', 'dureeMois', 'nature', 'formePrix',
+                 'offresRecues', 'ccag', 'sousTraitanceDeclaree',
+                 'typeGroupementOperateurs', 'tauxAvance_cat',
+                 'origineFrance', 'idAccordCadre', 'montant',
+                 'marcheInnovant', 'codeCPV_2']]
+
 
         return df
 
@@ -289,39 +273,177 @@ def columns_selection(df, cat, min=20000, max=50000000, top_n=40):
         return "Error, cat not in 'montant', 'marche_sim', 'anomalie'."
 
 
-def create_preprocessing_pipeline_init(cat, min=20000, max=50000000,
-                                     top_n=40):
+def create_preprocessing_pipeline(cat):
     """
-    Create a scikit-learn pipeline for initial preprocessing of public
+    Create a complete scikit-learn pipeline for preprocessing public 
     contract data.
 
-    This pipeline handles:
-    1. Converting idAccordCadre to a binary indicator
-    2. Categorizing tauxAvance into bins
-    3. Selecting and filtering features based on the specified parameters
+    This pipeline combines initial preprocessing (feature selection, 
+    categorical encoding) with follow-up preprocessing (imputation, 
+    scaling, one-hot encoding) in a single pipeline. The column 
+    selection and processing adapts based on the specified category.
 
     Parameters
     ----------
-    cat : list
-        Categories to select for filtering
-    min : int, default=20000
-        Minimum value threshold for filtering
-    max : int, default=50000000
-        Maximum value threshold for filtering
-    top_n : int, default=40
-        Number of top categories to select
+    cat : str
+        Category to select. Valid options: 'pred_montant', 'marche_sim', 
+        'anomalie'
 
     Returns
     -------
     sklearn.pipeline.Pipeline
-        Complete initial preprocessing pipeline
+        Complete preprocessing pipeline that outputs a pandas DataFrame
+    """
+    
+    # Determine column lists based on category
+    def get_column_lists(category):
+        """
+        Get column lists based on the category.
+        
+        Returns
+        -------
+        tuple
+            (numerical_columns, binary_columns, categorical_columns)
+        """
+        if category == 'pred_montant':
+            # Columns after pred_montant processing (no montant, has dateNotification)
+            numerical_cols = ['dureeMois', 'offresRecues', 'origineFrance']
+            binary_cols = ['marcheInnovant', 'sousTraitanceDeclaree',
+                          'idAccordCadre']
+            categorical_cols = ['nature', 'procedure', 'formePrix', 'ccag',
+                               'typeGroupementOperateurs', 'codeCPV_2',
+                               'tauxAvance_cat']
+        elif category == 'marche_sim':
+            # Columns after marche_sim processing (has montant, no dateNotification)
+            numerical_cols = ['montant', 'dureeMois', 'offresRecues',
+                             'origineFrance']
+            binary_cols = ['marcheInnovant', 'sousTraitanceDeclaree',
+                          'idAccordCadre']
+            categorical_cols = ['nature', 'procedure', 'formePrix', 'ccag',
+                               'typeGroupementOperateurs', 'codeCPV_2',
+                               'tauxAvance_cat']
+        elif category == 'anomalie':
+            # TODO: Define columns for anomalie category
+            # For now, using similar structure to marche_sim
+            numerical_cols = ['montant', 'dureeMois', 'offresRecues',
+                             'origineFrance']
+            binary_cols = ['marcheInnovant', 'sousTraitanceDeclaree',
+                          'idAccordCadre']
+            categorical_cols = ['nature', 'procedure', 'formePrix', 'ccag',
+                               'typeGroupementOperateurs', 'codeCPV_2',
+                               'tauxAvance_cat']
+        else:
+            raise ValueError(f"Invalid category: {category}. "
+                           "Must be 'pred_montant', 'marche_sim', or 'anomalie'")
+        
+        return numerical_cols, binary_cols, categorical_cols
+
+    # Get column lists for this category
+    numerical_columns, binary_columns, categorical_columns = get_column_lists(cat)
+
+    # Create the initial preprocessing pipeline
+    init_pipeline = Pipeline([
+        ('id_accord_encoder', IdAccordCadreEncoder()),
+        ('taux_avance_categorizer', TauxAvanceCategorizer()),
+        ('outliers_feature_rows_selector',
+         InitTransformer(cat=cat))
+    ])
+
+    # Create the column transformer for follow-up processing
+    column_transformer = ColumnTransformer([
+        # Process offresRecues
+        ('offres_recues_pipeline', Pipeline([
+            ('imputer', SimpleImputer(strategy='median')),
+            ('log_transform', LogTransformer()),
+            ('scaler', StandardScaler())
+        ]), (['offresRecues'] if 'offresRecues' in numerical_columns
+             else [])),
+
+        # Process other numerical columns
+        ('other_num_pipeline', Pipeline([
+            ('imputer', SimpleImputer(strategy='constant', fill_value=0.0)),
+            ('log_transform', LogTransformer()),
+            ('scaler', StandardScaler())
+        ]), [col for col in numerical_columns if col != 'offresRecues']),
+
+        # Process binary columns - keep as is, just impute missing values
+        ('binary_pipeline', Pipeline([
+            ('imputer', SimpleImputer(strategy='constant', fill_value=0))
+        ]), binary_columns),
+
+        # Process categorical columns
+        ('cat_pipeline', Pipeline([
+            ('imputer',
+             SimpleImputer(strategy='constant', fill_value='missing')),
+            ('string_converter', StringConverter()),
+            ('onehot', OneHotEncoder(handle_unknown='ignore',
+                                    sparse_output=False))
+        ]), categorical_columns)
+    ], remainder='drop', verbose_feature_names_out=True)
+
+    # Follow-up processing pipeline
+    follow_pipeline = Pipeline([
+        ('column_transformer', column_transformer)
+    ])
+
+    def transform_to_df(X, feature_names):
+        """
+        Convert array to DataFrame with specified column names.
+
+        Parameters
+        ----------
+        X : numpy array
+            Data to convert
+        feature_names : list
+            Column names for the DataFrame
+
+        Returns
+        -------
+        pandas.DataFrame
+            DataFrame with the provided column names
+        """
+        return pd.DataFrame(X, columns=feature_names)
+
+    # Complete pipeline combining init, follow, and DataFrame conversion
+    complete_pipeline = Pipeline([
+        ('init', init_pipeline),
+        ('follow', follow_pipeline),
+        ('to_dataframe', FunctionTransformer(
+            lambda X: transform_to_df(
+                X,
+                follow_pipeline.named_steps['column_transformer'].get_feature_names_out()
+            ),
+            validate=False
+        ))
+    ])
+
+    return complete_pipeline
+
+
+# Keep the old functions for backward compatibility
+def create_preprocessing_pipeline_init(cat):
+    """
+    Create a scikit-learn pipeline for initial preprocessing of public
+    contract data.
+
+    This function is deprecated. Use create_preprocessing_pipeline() instead.
+
+    Parameters
+    ----------
+    cat : str
+        Category to select for filtering
+
+    Returns
+    -------
+    sklearn.pipeline.Pipeline
+        Initial preprocessing pipeline
     """
     preprocessing_pipeline = Pipeline([
         ('id_accord_encoder', IdAccordCadreEncoder()),
         ('taux_avance_categorizer', TauxAvanceCategorizer()),
         ('outliers_feature_rows_selector',
-         InitTransformer(cat=cat, min=min, max=max, top_n=top_n)),
-            ])
+         InitTransformer(cat=cat))
+    ])
 
     return preprocessing_pipeline
 
@@ -331,34 +453,27 @@ def create_preprocessing_pipeline_follow():
     Create a scikit-learn pipeline for follow-up preprocessing of public
     contract data.
 
-    This pipeline handles:
-    1. Removing rows with missing dureeMois values
-    2. Transforming numerical columns with log and scaling
-    3. Processing categorical columns with one-hot encoding
-    4. Converting the result to a pandas DataFrame with proper column names
+    This function is deprecated. Use create_preprocessing_pipeline() instead.
 
     The pipeline processes these column types:
     - Numerical: montant, dureeMois, offresRecues
     - Binary: marcheInnovant, sousTraitanceDeclaree (kept as is)
     - Categorical: nature, procedure, formePrix, etc. (one-hot encoded)
-    Warning : adapt the numerical_columns, binary_columns, and
-    categorical_columns lists to match your dataset.
 
     Returns
     -------
     sklearn.pipeline.Pipeline
-        Complete follow-up preprocessing pipeline that outputs a pandas
-        DataFrame
+        Follow-up preprocessing pipeline that outputs a pandas DataFrame
     """
 
     # adapt these lists to your dataset !!!!
     numerical_columns = ['montant', 'dureeMois', 'offresRecues',
-                        'origineFrance']
+                         'origineFrance']
     binary_columns = ['marcheInnovant', 'sousTraitanceDeclaree',
-                     'idAccordCadre']
+                      'idAccordCadre']
     categorical_columns = ['nature', 'procedure', 'formePrix', 'ccag',
-                          'typeGroupementOperateurs',
-                          'codeCPV_2', 'tauxAvance_cat']
+                           'typeGroupementOperateurs',
+                           'codeCPV_2', 'tauxAvance_cat']
 
     preprocessing_pipeline = Pipeline([
         ('column_transformer', ColumnTransformer([
@@ -427,17 +542,250 @@ def create_preprocessing_pipeline_follow():
     return final_pipeline
 
 
-def create_complete_pipeline(cat, min=20000, max=50000000, top_n=40):
+def create_complete_pipeline(cat):
     """
     Create a complete preprocessing pipeline combining both init and follow
     steps.
+    
+    This function is deprecated. Use create_preprocessing_pipeline() instead.
     """
-    init_pipeline = create_preprocessing_pipeline_init(cat, min, max, top_n)
-    follow_pipeline = create_preprocessing_pipeline_follow()
+    return create_preprocessing_pipeline(cat)
 
+
+def create_pred_montant_pipeline():
+    """
+    Create a preprocessing pipeline specifically for 'pred_montant' category.
+    
+    This pipeline is optimized for predicting contract amounts and excludes
+    the montant column from processing while including dateNotification-related
+    features.
+        
+    Returns
+    -------
+    sklearn.pipeline.Pipeline
+        Complete preprocessing pipeline for pred_montant
+    """
+    # Column configuration for pred_montant
+    numerical_columns = ['dureeMois', 'offresRecues', 'origineFrance']
+    binary_columns = ['marcheInnovant', 'sousTraitanceDeclaree', 'idAccordCadre']
+    categorical_columns = ['nature', 'procedure', 'formePrix', 'ccag',
+                          'typeGroupementOperateurs', 'codeCPV_2',
+                          'tauxAvance_cat']
+    
+    # Initial preprocessing
+    init_pipeline = Pipeline([
+        ('id_accord_encoder', IdAccordCadreEncoder()),
+        ('taux_avance_categorizer', TauxAvanceCategorizer()),
+        ('outliers_feature_rows_selector',
+         InitTransformer(cat='pred_montant'))
+    ])
+    
+    # Column transformer
+    column_transformer = ColumnTransformer([
+        ('offres_recues_pipeline', Pipeline([
+            ('imputer', SimpleImputer(strategy='median')),
+            ('log_transform', LogTransformer()),
+            ('scaler', StandardScaler())
+        ]), ['offresRecues']),
+        
+        ('other_num_pipeline', Pipeline([
+            ('imputer', SimpleImputer(strategy='constant', fill_value=0.0)),
+            ('log_transform', LogTransformer()),
+            ('scaler', StandardScaler())
+        ]), [col for col in numerical_columns if col != 'offresRecues']),
+        
+        ('binary_pipeline', Pipeline([
+            ('imputer', SimpleImputer(strategy='constant', fill_value=0))
+        ]), binary_columns),
+        
+        ('cat_pipeline', Pipeline([
+            ('imputer', SimpleImputer(strategy='constant', fill_value='missing')),
+            ('string_converter', StringConverter()),
+            ('onehot', OneHotEncoder(handle_unknown='ignore',
+                                    sparse_output=False))
+        ]), categorical_columns)
+    ], remainder='drop', verbose_feature_names_out=True)
+    
+    # Follow-up processing
+    follow_pipeline = Pipeline([
+        ('column_transformer', column_transformer)
+    ])
+    
+    def transform_to_df(X, feature_names):
+        return pd.DataFrame(X, columns=feature_names)
+    
+    # Complete pipeline
     complete_pipeline = Pipeline([
         ('init', init_pipeline),
-        ('follow', follow_pipeline)
+        ('follow', follow_pipeline),
+        ('to_dataframe', FunctionTransformer(
+            lambda X: transform_to_df(
+                X,
+                follow_pipeline.named_steps[
+                    'column_transformer'].get_feature_names_out()
+            ),
+            validate=False
+        ))
     ])
+    
+    return complete_pipeline
 
+
+def create_marche_sim_pipeline():
+    """
+    Create a preprocessing pipeline specifically for 'marche_sim' category.
+    
+    This pipeline is optimized for similar contract analysis and includes
+    the montant column for processing.
+        
+    Returns
+    -------
+    sklearn.pipeline.Pipeline
+        Complete preprocessing pipeline for marche_sim
+    """
+    # Column configuration for marche_sim
+    numerical_columns = ['montant', 'dureeMois', 'offresRecues', 'origineFrance']
+    binary_columns = ['marcheInnovant', 'sousTraitanceDeclaree', 'idAccordCadre']
+    categorical_columns = ['nature', 'procedure', 'formePrix', 'ccag',
+                          'typeGroupementOperateurs', 'codeCPV_2',
+                          'tauxAvance_cat']
+    
+    # Initial preprocessing
+    init_pipeline = Pipeline([
+        ('id_accord_encoder', IdAccordCadreEncoder()),
+        ('taux_avance_categorizer', TauxAvanceCategorizer()),
+        ('outliers_feature_rows_selector',
+         InitTransformer(cat='marche_sim'))
+    ])
+    
+    # Column transformer
+    column_transformer = ColumnTransformer([
+        ('offres_recues_pipeline', Pipeline([
+            ('imputer', SimpleImputer(strategy='median')),
+            ('log_transform', LogTransformer()),
+            ('scaler', StandardScaler())
+        ]), ['offresRecues']),
+        
+        ('other_num_pipeline', Pipeline([
+            ('imputer', SimpleImputer(strategy='constant', fill_value=0.0)),
+            ('log_transform', LogTransformer()),
+            ('scaler', StandardScaler())
+        ]), [col for col in numerical_columns if col != 'offresRecues']),
+        
+        ('binary_pipeline', Pipeline([
+            ('imputer', SimpleImputer(strategy='constant', fill_value=0))
+        ]), binary_columns),
+        
+        ('cat_pipeline', Pipeline([
+            ('imputer', SimpleImputer(strategy='constant', fill_value='missing')),
+            ('string_converter', StringConverter()),
+            ('onehot', OneHotEncoder(handle_unknown='ignore',
+                                    sparse_output=False))
+        ]), categorical_columns)
+    ], remainder='drop', verbose_feature_names_out=True)
+    
+    # Follow-up processing
+    follow_pipeline = Pipeline([
+        ('column_transformer', column_transformer)
+    ])
+    
+    def transform_to_df(X, feature_names):
+        return pd.DataFrame(X, columns=feature_names)
+    
+    # Complete pipeline
+    complete_pipeline = Pipeline([
+        ('init', init_pipeline),
+        ('follow', follow_pipeline),
+        ('to_dataframe', FunctionTransformer(
+            lambda X: transform_to_df(
+                X,
+                follow_pipeline.named_steps[
+                    'column_transformer'].get_feature_names_out()
+            ),
+            validate=False
+        ))
+    ])
+    
+    return complete_pipeline
+
+
+def create_anomalie_pipeline():
+    """
+    Create a preprocessing pipeline specifically for 'anomalie' category.
+    
+    This pipeline is optimized for anomaly detection and includes features
+    relevant for identifying irregular contract patterns.
+    
+    Note: Currently uses similar configuration to marche_sim. 
+    TODO: Customize columns for anomaly detection specific features.
+        
+    Returns
+    -------
+    sklearn.pipeline.Pipeline
+        Complete preprocessing pipeline for anomalie
+    """
+    # Column configuration for anomalie
+    # TODO: Customize these columns for anomaly detection
+    numerical_columns = ['montant', 'dureeMois', 'offresRecues', 'origineFrance']
+    binary_columns = ['marcheInnovant', 'sousTraitanceDeclaree', 'idAccordCadre']
+    categorical_columns = ['nature', 'procedure', 'formePrix', 'ccag',
+                          'typeGroupementOperateurs', 'codeCPV_2',
+                          'tauxAvance_cat']
+    
+    # Initial preprocessing
+    init_pipeline = Pipeline([
+        ('id_accord_encoder', IdAccordCadreEncoder()),
+        ('taux_avance_categorizer', TauxAvanceCategorizer()),
+        ('outliers_feature_rows_selector',
+         InitTransformer(cat='anomalie'))
+    ])
+    
+    # Column transformer
+    column_transformer = ColumnTransformer([
+        ('offres_recues_pipeline', Pipeline([
+            ('imputer', SimpleImputer(strategy='median')),
+            ('log_transform', LogTransformer()),
+            ('scaler', StandardScaler())
+        ]), ['offresRecues']),
+        
+        ('other_num_pipeline', Pipeline([
+            ('imputer', SimpleImputer(strategy='constant', fill_value=0.0)),
+            ('log_transform', LogTransformer()),
+            ('scaler', StandardScaler())
+        ]), [col for col in numerical_columns if col != 'offresRecues']),
+        
+        ('binary_pipeline', Pipeline([
+            ('imputer', SimpleImputer(strategy='constant', fill_value=0))
+        ]), binary_columns),
+        
+        ('cat_pipeline', Pipeline([
+            ('imputer', SimpleImputer(strategy='constant', fill_value='missing')),
+            ('string_converter', StringConverter()),
+            ('onehot', OneHotEncoder(handle_unknown='ignore',
+                                    sparse_output=False))
+        ]), categorical_columns)
+    ], remainder='drop', verbose_feature_names_out=True)
+    
+    # Follow-up processing
+    follow_pipeline = Pipeline([
+        ('column_transformer', column_transformer)
+    ])
+    
+    def transform_to_df(X, feature_names):
+        return pd.DataFrame(X, columns=feature_names)
+    
+    # Complete pipeline
+    complete_pipeline = Pipeline([
+        ('init', init_pipeline),
+        ('follow', follow_pipeline),
+        ('to_dataframe', FunctionTransformer(
+            lambda X: transform_to_df(
+                X,
+                follow_pipeline.named_steps[
+                    'column_transformer'].get_feature_names_out()
+            ),
+            validate=False
+        ))
+    ])
+    
     return complete_pipeline 
