@@ -292,12 +292,16 @@ def create_preprocessing_pipeline_follow():
     - Numerical: montant, dureeMois, offresRecues
     - Binary: marcheInnovant, sousTraitanceDeclaree (kept as is)
     - Categorical: nature, procedure, formePrix, etc. (one-hot encoded)
+    Warning : adpat the numerical_columns, binary_columns, and categorical_columns lists
+    to match your dataset.
 
     Returns
     -------
     sklearn.pipeline.Pipeline
         Complete follow-up preprocessing pipeline that outputs a pandas DataFrame
     """
+
+    # adapt these lists to your dataset !!!!
     numerical_columns = ['montant', 'dureeMois', 'offresRecues', 'origineFrance']
     binary_columns = ['marcheInnovant', 'sousTraitanceDeclaree', 'idAccordCadre']
     categorical_columns = ['nature', 'procedure', 'formePrix', 'ccag',
