@@ -494,6 +494,27 @@ class GNNAnomalyDetector:
         num_nodes = tf.shape(target_features)[0]
         dummy_embeddings = tf.zeros((num_nodes, self.output_dim))
         
+        # Add batch dimension to targets
+        target_features_batched = tf.expand_dims(target_features, 0)
+        dummy_embeddings_batched = tf.expand_dims(dummy_embeddings, 0)
+        
+        # Add batch dimension to graph tensor
+        batched_graph = tfgnn.GraphTensor.from_pieces(
+            node_sets={
+                "entities": tfgnn.NodeSet.from_fields(
+                    features=graph_tensor.node_sets["entities"].features,
+                    sizes=tf.expand_dims(graph_tensor.node_sets["entities"].sizes, 0)
+                )
+            },
+            edge_sets={
+                "contracts": tfgnn.EdgeSet.from_fields(
+                    features=graph_tensor.edge_sets["contracts"].features,
+                    sizes=tf.expand_dims(graph_tensor.edge_sets["contracts"].sizes, 0),
+                    adjacency=graph_tensor.edge_sets["contracts"].adjacency
+                )
+            }
+        )
+        
         # Compile model
         self.model.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
@@ -506,9 +527,9 @@ class GNNAnomalyDetector:
         
         # Train
         history = self.model.fit(
-            graph_tensor,
-            {'embeddings': dummy_embeddings,
-             'reconstructed': target_features},
+            batched_graph,
+            {'embeddings': dummy_embeddings_batched,
+             'reconstructed': target_features_batched},
             epochs=epochs,
             verbose=1
         )
