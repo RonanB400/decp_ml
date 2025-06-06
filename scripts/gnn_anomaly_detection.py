@@ -13,8 +13,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import os
-import json
-import sqlite3
+import pickle
 import logging
 from typing import Dict, Tuple, List
 
@@ -46,9 +45,9 @@ class ProcurementGraphBuilder:
         """Load procurement data from CSV files."""
         logger.info(f"Loading data from {data_path}")
 
-        X = pd.read_csv(os.path.join(data_path, 'data_clean.csv'))
+        X = pd.read_csv(os.path.join(data_path, 'data_clean.csv'), encoding='utf-8')
         # Basic data validation
-        required_columns = ['acheteur_nom', 'titulaire_nom', 'montant',
+        required_columns = ['acheteur_id', 'titulaire_id', 'montant',
                             'dateNotification']
         missing_cols = [col for col in required_columns if col not in X.columns]
         if missing_cols:
@@ -61,7 +60,7 @@ class ProcurementGraphBuilder:
         logger.info("Preprocessing data...")
         
         # Fill missing values
-        X = filter_top_cpv_categories(X, top_n=80, cpv_column='codeCPV_3')
+        X = filter_top_cpv_categories(X, top_n=60, cpv_column='codeCPV_3')
 
         # Preprocess pipeline
         numerical_columns = ['montant', 'dureeMois', 'offresRecues']
@@ -73,19 +72,21 @@ class ProcurementGraphBuilder:
                                'typeGroupementOperateurs', 'tauxAvance_cat',
                                'codeCPV_3']
         
-        nodes_columns = ['acheteur_nom', 'titulaire_nom']
+        nodes_columns = ['acheteur_id', 'titulaire_id']
         
         X_train, X_test = train_test_split(X, test_size=0.2, random_state=0, stratify=X['codeCPV_3'])
         
         preproc_pipeline = create_pipeline(numerical_columns, binary_columns, categorical_columns)
 
         X_train_preproc = preproc_pipeline.fit_transform(X_train)
+        X_train_preproc.index = X_train.index
         X_train_preproc = pd.concat([X_train_preproc, X_train[nodes_columns]], axis=1)
 
         X_test_preproc = preproc_pipeline.transform(X_test)
+        X_test_preproc.index = X_test.index
         X_test_preproc = pd.concat([X_test_preproc, X_test[nodes_columns]], axis=1)
         
-        return X_train_preproc, X_test_preproc
+        return X_train_preproc, X_test_preproc, X_train, X_test
     
 
     
@@ -99,9 +100,20 @@ class ProcurementGraphBuilder:
         """
         logger.info("Creating graph structure from preprocessed data...")
         
+        # Remove rows with NaN buyer or supplier names
+        valid_mask = (X_processed['acheteur_id'].notna() & 
+                     X_processed['titulaire_id'].notna())
+        X_processed = X_processed[valid_mask].copy()
+        
+        if X_original is not None:
+            X_original = X_original[valid_mask].copy()
+        
+        logger.info(f"Filtered to {len(X_processed)} valid contracts "
+                   f"(removed {(~valid_mask).sum()} contracts with missing names)")
+        
         # Create unique identifiers for buyers and suppliers
-        buyers = X_processed['acheteur_nom'].unique()
-        suppliers = X_processed['titulaire_nom'].unique()
+        buyers = X_processed['acheteur_id'].unique()
+        suppliers = X_processed['titulaire_id'].unique()
         
         # Create node mappings
         # buyer_to_id / supplier_to_id is a dictionary that maps each buyer / supplier to a unique integer
@@ -117,13 +129,13 @@ class ProcurementGraphBuilder:
         
         # Map buyer and supplier names to IDs using vectorized operations
         # buyer_ids / supplier_ids is a list of integers that correspond to the unique integer ID of each buyer / supplier
-        buyer_ids = X_processed['acheteur_nom'].map(buyer_to_id).values
-        supplier_ids = X_processed['titulaire_nom'].map(supplier_to_id).values
-        edges = np.column_stack([buyer_ids, supplier_ids])
+        buyer_ids = X_processed['acheteur_id'].map(buyer_to_id).values.astype(np.int32)
+        supplier_ids = X_processed['titulaire_id'].map(supplier_to_id).values.astype(np.int32)
+        edges = np.column_stack([buyer_ids, supplier_ids]).astype(np.int32)
         
         # Extract all feature columns (excluding entity names)
         feature_columns = [col for col in X_processed.columns
-                           if col not in ['acheteur_nom', 'titulaire_nom']]
+                           if col not in ['acheteur_id', 'titulaire_id']]
         
         # Create edge features from all preprocessed features
         edge_features = X_processed[feature_columns].values.astype(np.float32)
@@ -133,15 +145,16 @@ class ProcurementGraphBuilder:
         contract_ids = X_processed.index.tolist()
         
         # OPTIMIZATION 2: Bulk computation of node features from preprocessed data
-        logger.info("Computing node features from preprocessed data...")
-        
+        logger.info("Computing acheteur features from preprocessed data...")
+
         # Pre-compute aggregations for buyers
         buyer_stats = self._compute_bulk_node_features_preprocessed(
-            X_processed, feature_columns, 'acheteur_nom', 'titulaire_nom')
+            X_processed, feature_columns, 'acheteur_id', 'titulaire_id')
         
+        logger.info("Computing titulaire features from preprocessed data...")
         # Pre-compute aggregations for suppliers  
         supplier_stats = self._compute_bulk_node_features_preprocessed(
-            X_processed, feature_columns, 'titulaire_nom', 'acheteur_nom')
+            X_processed, feature_columns, 'titulaire_id', 'acheteur_id')
         
         # Build node features arrays
         node_features = []
@@ -161,18 +174,18 @@ class ProcurementGraphBuilder:
         
         # Create contract data for analysis (use original data if available)
         if X_original is not None:
-            contract_data = X_original[['acheteur_nom', 'titulaire_nom',
+            contract_data = X_original[['acheteur_id', 'titulaire_id',
                                         'montant', 'codeCPV_3', 'procedure',
-                                        'dateNotification']].copy()
+                                        'dureeMois']].copy()
         else:
             # Create minimal contract data from preprocessed features
             contract_data = pd.DataFrame({
-                'acheteur_nom': X_processed['acheteur_nom'],
-                'titulaire_nom': X_processed['titulaire_nom'],
+                'acheteur_id': X_processed['acheteur_id'],
+                'titulaire_id': X_processed['titulaire_id'],
                 'montant': X_processed['other_num_pipeline__montant'],
                 'codeCPV_3': 'preprocessed',  # Placeholder
                 'procedure': 'preprocessed',  # Placeholder
-                'dateNotification': 'preprocessed'  # Placeholder
+                'dureeMois': 'preprocessed'  # Placeholder
             })
         
         graph_data = {
@@ -180,7 +193,7 @@ class ProcurementGraphBuilder:
             'edges': edges,
             'node_features': np.array(node_features, dtype=np.float32),
             'edge_features': edge_features,
-            'node_types': np.array(node_types),
+            'node_types': np.array(node_types, dtype=np.int32),
             'buyer_to_id': buyer_to_id,
             'supplier_to_id': supplier_to_id,
             'contract_ids': contract_ids,
@@ -188,24 +201,13 @@ class ProcurementGraphBuilder:
             'feature_columns': feature_columns  # Store feature column names
         }
 
-        # Save the graph data to a json file
+        # Save the graph data to a pickle file
         data_dir = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             'data')
         os.makedirs(data_dir, exist_ok=True)
-        with open(os.path.join(data_dir, 'graph_data.json'), 'w') as f:
-            # Convert numpy arrays to lists for JSON serialization
-            json_data = {
-                'nodes': graph_data['nodes'],
-                'edges': graph_data['edges'].tolist(),
-                'node_features': graph_data['node_features'].tolist(),
-                'edge_features': graph_data['edge_features'].tolist(),
-                'node_types': graph_data['node_types'].tolist(),
-                'buyer_to_id': graph_data['buyer_to_id'],
-                'supplier_to_id': graph_data['supplier_to_id'],
-                'contract_ids': graph_data['contract_ids']
-            }
-            json.dump(json_data, f)
+        with open(os.path.join(data_dir, 'graph_data.pkl'), 'wb') as f:
+            pickle.dump(graph_data, f)
         
         return graph_data
     
@@ -275,29 +277,53 @@ class ProcurementGraphBuilder:
             # Try to get meaningful metrics from node features
             if len(node_features) >= 3:
                 # Last 3 features are: num_contracts, num_partners, contracts_per_partner
-                num_contracts = int(node_features[-3])
+                num_contracts = int(node_features[-3]) if not np.isnan(node_features[-3]) else 1
                 node_size = min(50 + num_contracts * 2, 100)
                 
                 # Use mean of feature values for color
                 if len(node_features) > 3:
-                    feature_value = float(np.mean(node_features[:-3]))
+                    valid_features = node_features[:-3]
+                    valid_features = valid_features[~np.isnan(valid_features)]
+                    feature_value = float(np.mean(valid_features)) if len(valid_features) > 0 else 0.0
                 else:
-                    feature_value = float(node_features[-1])  # contracts_per_partner
+                    feature_value = float(node_features[-1]) if not np.isnan(node_features[-1]) else 0.0
             else:
                 # Fallback
                 num_contracts = 1
                 node_size = 50
-                feature_value = float(node_features[0]) if len(node_features) > 0 else 0
+                feature_value = float(node_features[0]) if len(node_features) > 0 and not np.isnan(node_features[0]) else 0.0
+            
             # Normalize feature value to a color scale (blue to red)
             # Use percentile-based normalization for better color distribution
-            all_feature_values = [float(np.mean(nf[:-3])) if len(nf) > 3 else float(nf[-1]) if len(nf) >= 1 else 0 
-                                 for nf in graph_data['node_features']]
-            percentile_90 = np.percentile(all_feature_values, 90)
+            all_feature_values = []
+            for nf in graph_data['node_features']:
+                if len(nf) > 3:
+                    valid_features = nf[:-3]
+                    valid_features = valid_features[~np.isnan(valid_features)]
+                    if len(valid_features) > 0:
+                        all_feature_values.append(float(np.mean(valid_features)))
+                    else:
+                        all_feature_values.append(0.0)
+                elif len(nf) >= 1:
+                    val = float(nf[-1]) if not np.isnan(nf[-1]) else 0.0
+                    all_feature_values.append(val)
+                else:
+                    all_feature_values.append(0.0)
+            
+            percentile_90 = np.percentile(all_feature_values, 90) if len(all_feature_values) > 0 else 1.0
+            if np.isnan(percentile_90) or percentile_90 <= 0:
+                percentile_90 = 1.0
+            if np.isnan(feature_value):
+                feature_value = 0.0
+                
             feature_ratio = min(feature_value / max(percentile_90, 1), 1.0)
+            if np.isnan(feature_ratio):
+                feature_ratio = 0.0
+                
             color = f"rgb({int(255 * feature_ratio)}, 0, {int(255 * (1 - feature_ratio))})"
             
             # Create tooltip with available information
-            num_partners = int(node_features[-2]) if len(node_features) >= 2 else 0
+            num_partners = int(node_features[-2]) if len(node_features) >= 2 and not np.isnan(node_features[-2]) else 0
             tooltip = f"Type: {'Buyer' if node_type == 0 else 'Supplier'}\n"
             tooltip += f"Contracts: {num_contracts}\n"
             tooltip += f"Partners: {num_partners}\n"
@@ -415,7 +441,7 @@ class GNNAnomalyDetector:
                     features={
                         "features": tf.constant(node_features_scaled,
                                                 dtype=tf.float32),
-                        "node_type": tf.constant(graph_data['node_types'],
+                        "node_type": tf.constant(np.array(graph_data['node_types'], dtype=np.int32),
                                                dtype=tf.int32)
                     },
                     sizes=tf.constant([len(node_features_scaled)],
@@ -432,10 +458,10 @@ class GNNAnomalyDetector:
                                       dtype=tf.int32),
                     adjacency=tfgnn.Adjacency.from_indices(
                         source=("entities",
-                                tf.constant(graph_data['edges'][:, 0],
+                                tf.constant(graph_data['edges'][:, 0].astype(np.int32),
                                             dtype=tf.int32)),
                         target=("entities",
-                                tf.constant(graph_data['edges'][:, 1],
+                                tf.constant(graph_data['edges'][:, 1].astype(np.int32),
                                             dtype=tf.int32))
                     )
                 )
@@ -734,8 +760,8 @@ class AnomalyAnalyzer:
         
         return pd.DataFrame({
             'contract_id': graph_data['contract_ids'],
-            'buyer_name': contract_data['acheteur_nom'].values,
-            'supplier_name': contract_data['titulaire_nom'].values,
+            'buyer_name': contract_data['acheteur_id'].values,
+            'supplier_name': contract_data['titulaire_id'].values,
             'amount': contract_data['montant'].values,
             'cpv_code': contract_data['codeCPV_3'].values,
             'procedure': contract_data['procedure'].values,
@@ -1000,10 +1026,10 @@ def main():
     try:
         # Load and preprocess data
         X = graph_builder.load_data(DATA_PATH)
-        X_train_preproc, X_test_preproc = graph_builder.preprocess_data(X)
+        X_train_preproc, X_test_preproc, X_train, X_test = graph_builder.preprocess_data(X)
         
         # Create graph from preprocessed data
-        graph_data = graph_builder.create_graph(X_train_preproc, X)
+        graph_data = graph_builder.create_graph(X_train_preproc, X_train)
         
         # Scale features before creating TensorFlow graph
         node_features = graph_data['node_features']
@@ -1303,4 +1329,44 @@ def train_model_standalone(model: tf.keras.Model,
 
 
 if __name__ == "__main__":
-    main() 
+    main()
+
+
+# USAGE EXAMPLE FOR NOTEBOOK:
+"""
+# Correct sequence for using this module in a notebook:
+
+# 1. Initialize components
+graph_builder = ProcurementGraphBuilder()
+gnn_detector = GNNAnomalyDetector(hidden_dim=64, output_dim=32, num_layers=3)
+
+# 2. Load and preprocess data
+X = graph_builder.load_data(DATA_PATH)  # Replace DATA_PATH with your path
+X_train_preproc, X_test_preproc, X_train, X_test = graph_builder.preprocess_data(X)
+
+# 3. Create graph from preprocessed data - THIS CREATES THE NODE AND EDGE FEATURES
+graph_data = graph_builder.create_graph(X_train_preproc, X_train)
+
+# 4. NOW you can access the features from graph_data
+node_features = graph_data['node_features']
+edge_features = graph_data['edge_features']
+
+# 5. Scale the features
+node_features_scaled = graph_builder.node_scaler.fit_transform(node_features)
+edge_features_scaled = graph_builder.edge_scaler.fit_transform(edge_features)
+
+# 6. Create TensorFlow graph
+graph_tensor = gnn_detector.create_tensorflow_graph(
+    graph_data, node_features_scaled, edge_features_scaled)
+
+# 7. Build and train model
+gnn_detector.model = gnn_detector.build_model(
+    node_features_scaled.shape[1], edge_features_scaled.shape[1])
+
+# 8. Train
+history = gnn_detector.train(graph_tensor, epochs=50)
+
+# 9. Detect anomalies
+(node_reconstruction_error, edge_reconstruction_error, 
+ node_threshold, edge_threshold) = gnn_detector.detect_anomalies()
+""" 
