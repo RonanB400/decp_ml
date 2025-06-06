@@ -177,3 +177,4 @@ wrapt==1.14.1
 xgboost==3.0.2
 zstandard==0.23.0
 hdbscan==0.8.40
+umap-learn==0.5.7
