@@ -156,7 +156,7 @@ def add_cpv_hierarchy_column(df, cpv_column='codeCPV', level=2,
         new_column_name = f'codeCPV_{level}'
     
     # Apply the hierarchy extraction function
-    df_copy.loc[:, new_column_name] = df_copy[cpv_column].apply(
+    df_copy[new_column_name] = df_copy[cpv_column].apply(
         lambda x: extract_cpv_hierarchy_level(x, level=level)
     )
     
