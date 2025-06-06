@@ -373,9 +373,24 @@ class GNNAnomalyDetector:
         return graph_tensor
     
     def build_model(self, node_feature_dim: int,
-                    edge_feature_dim: int) -> tf.keras.Model:
-        """Build the GNN model for anomaly detection."""
+                    edge_feature_dim: int,
+                    l2_regularization: float = 5e-4,
+                    dropout_rate: float = 0.3) -> tf.keras.Model:
+        """Build the GNN model for anomaly detection with proper regularization."""
         logger.info("Building GNN model...")
+        
+        # Helper function for regularized dense layers
+        def dense_with_regularization(units, activation="relu"):
+            """Dense layer with L2 regularization and dropout."""
+            regularizer = tf.keras.regularizers.l2(l2_regularization)
+            return tf.keras.Sequential([
+                tf.keras.layers.Dense(
+                    units,
+                    activation=activation,
+                    kernel_regularizer=regularizer,
+                    bias_regularizer=regularizer),
+                tf.keras.layers.Dropout(dropout_rate)
+            ])
         
         # Create input spec with single node set using correct API
         input_spec = tfgnn.GraphTensorSpec.from_piece_specs(
@@ -411,38 +426,49 @@ class GNNAnomalyDetector:
         input_graph = tf.keras.layers.Input(type_spec=input_spec)
         graph = input_graph
         
-        # Initialize hidden state for the first layer using actual features
+        # Initialize hidden states for both nodes and edges
+        def set_initial_node_state(node_set, *, node_set_name):
+            return tf.keras.layers.Dense(self.hidden_dim)(node_set["features"])
+            
+        def set_initial_edge_state(edge_set, *, edge_set_name):
+            return tf.keras.layers.Dense(self.hidden_dim)(edge_set["features"])
+            
         graph = tfgnn.keras.layers.MapFeatures(
-            node_sets_fn=lambda node_set, node_set_name: node_set["features"]
+            node_sets_fn=set_initial_node_state,
+            edge_sets_fn=set_initial_edge_state
         )(graph)
         
-        # GNN layers
+        # GNN message passing layers with regularization
         for i in range(self.num_layers):
             graph = tfgnn.keras.layers.GraphUpdate(
                 node_sets={
                     "entities": tfgnn.keras.layers.NodeSetUpdate(
                         {"contracts": tfgnn.keras.layers.SimpleConv(
-                            sender_edge_feature="features",
-                            message_fn=tf.keras.layers.Dense(self.hidden_dim),
+                            sender_edge_feature=tfgnn.HIDDEN_STATE,
+                            message_fn=dense_with_regularization(self.hidden_dim),
                             reduce_type="sum",
                             receiver_tag=tfgnn.TARGET)},
                         tfgnn.keras.layers.NextStateFromConcat(
-                            tf.keras.layers.Dense(self.hidden_dim)))}
+                            dense_with_regularization(self.hidden_dim)))}
             )(graph)
         
-        # Extract node features
+        # Extract final node representations
         node_features = graph.node_sets["entities"][tfgnn.HIDDEN_STATE]
         
-        # Create embeddings
-        embeddings = tf.keras.layers.Dense(
-            self.output_dim, activation="tanh",
-            name="embeddings")(node_features)
+        # Create embeddings with regularization
+        embeddings = dense_with_regularization(
+            self.output_dim, activation="tanh")(node_features)
+        embeddings = tf.keras.layers.Lambda(
+            lambda x: x, name="embeddings")(embeddings)
         
-        # Reconstruction layer for anomaly detection
-        reconstructed = tf.keras.layers.Dense(
+        # Reconstruction pathway for anomaly detection
+        reconstructed = dense_with_regularization(
             self.hidden_dim, activation="relu")(embeddings)
+        # Final reconstruction layer without dropout to preserve reconstruction quality
         reconstructed = tf.keras.layers.Dense(
-            node_feature_dim, name="reconstructed")(reconstructed)
+            node_feature_dim, 
+            kernel_regularizer=tf.keras.regularizers.l2(l2_regularization),
+            name="reconstructed")(reconstructed)
         
         model = tf.keras.Model(
             inputs=input_graph,
@@ -468,6 +494,35 @@ class GNNAnomalyDetector:
         num_nodes = tf.shape(target_features)[0]
         dummy_embeddings = tf.zeros((num_nodes, self.output_dim))
         
+        # Add batch dimension to targets
+        target_features_batched = tf.expand_dims(target_features, 0)
+        dummy_embeddings_batched = tf.expand_dims(dummy_embeddings, 0)
+        
+        # Add batch dimension to graph tensor properly
+        batched_graph = tfgnn.GraphTensor.from_pieces(
+            node_sets={
+                "entities": tfgnn.NodeSet.from_fields(
+                    features={
+                        "features": tf.expand_dims(
+                            graph_tensor.node_sets["entities"]["features"], 0),
+                        "node_type": tf.expand_dims(
+                            graph_tensor.node_sets["entities"]["node_type"], 0)
+                    },
+                    sizes=graph_tensor.node_sets["entities"].sizes
+                )
+            },
+            edge_sets={
+                "contracts": tfgnn.EdgeSet.from_fields(
+                    features={
+                        "features": tf.expand_dims(
+                            graph_tensor.edge_sets["contracts"]["features"], 0)
+                    },
+                    sizes=graph_tensor.edge_sets["contracts"].sizes,
+                    adjacency=graph_tensor.edge_sets["contracts"].adjacency
+                )
+            }
+        )
+        
         # Compile model
         self.model.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
@@ -480,9 +535,9 @@ class GNNAnomalyDetector:
         
         # Train
         history = self.model.fit(
-            graph_tensor,
-            {'embeddings': dummy_embeddings,
-             'reconstructed': target_features},
+            batched_graph,
+            {'embeddings': dummy_embeddings_batched,
+             'reconstructed': target_features_batched},
             epochs=epochs,
             verbose=1
         )
@@ -905,6 +960,183 @@ def main():
     except Exception as e:
         logger.error(f"Error in GNN pipeline: {str(e)}")
         raise
+
+
+def build_model_standalone(node_feature_dim: int, edge_feature_dim: int,
+                          hidden_dim: int = 64, output_dim: int = 32,
+                          num_layers: int = 3, l2_regularization: float = 5e-4,
+                          dropout_rate: float = 0.3) -> tf.keras.Model:
+    """Standalone version of build_model for direct use in notebooks."""
+    logger.info("Building GNN model...")
+    
+    # Helper function for regularized dense layers
+    def dense_with_regularization(units, activation="relu"):
+        """Dense layer with L2 regularization and dropout."""
+        regularizer = tf.keras.regularizers.l2(l2_regularization)
+        return tf.keras.Sequential([
+            tf.keras.layers.Dense(
+                units,
+                activation=activation,
+                kernel_regularizer=regularizer,
+                bias_regularizer=regularizer),
+            tf.keras.layers.Dropout(dropout_rate)
+        ])
+    
+    # Create input spec for batched graphs
+    input_spec = tfgnn.GraphTensorSpec.from_piece_specs(
+        node_sets_spec={
+            "entities": tfgnn.NodeSetSpec.from_field_specs(
+                features_spec={
+                    "features": tf.TensorSpec(
+                        shape=(None, node_feature_dim),
+                        dtype=tf.float32),
+                    "node_type": tf.TensorSpec(shape=(None,),
+                                               dtype=tf.int32)
+                },
+                sizes_spec=tf.TensorSpec(shape=(None,), dtype=tf.int32)
+            )
+        },
+        edge_sets_spec={
+            "contracts": tfgnn.EdgeSetSpec.from_field_specs(
+                features_spec={
+                    "features": tf.TensorSpec(
+                        shape=(None, edge_feature_dim),
+                        dtype=tf.float32)
+                },
+                sizes_spec=tf.TensorSpec(shape=(None,), dtype=tf.int32),
+                adjacency_spec=tfgnn.AdjacencySpec.from_incident_node_sets(
+                    source_node_set="entities",
+                    target_node_set="entities"
+                )
+            )
+        }
+    )
+    
+    # Input layer for batched GraphTensor
+    input_graph = tf.keras.layers.Input(type_spec=input_spec)
+    
+    # IMPORTANT: Merge batch to components - this is the key for proper batching
+    graph = input_graph.merge_batch_to_components()
+    
+    # Initialize hidden states for both nodes and edges
+    def set_initial_node_state(node_set, *, node_set_name):
+        return tf.keras.layers.Dense(hidden_dim)(node_set["features"])
+        
+    def set_initial_edge_state(edge_set, *, edge_set_name):
+        return tf.keras.layers.Dense(hidden_dim)(edge_set["features"])
+        
+    graph = tfgnn.keras.layers.MapFeatures(
+        node_sets_fn=set_initial_node_state,
+        edge_sets_fn=set_initial_edge_state
+    )(graph)
+    
+    # GNN message passing layers with regularization
+    for i in range(num_layers):
+        graph = tfgnn.keras.layers.GraphUpdate(
+            node_sets={
+                "entities": tfgnn.keras.layers.NodeSetUpdate(
+                    {"contracts": tfgnn.keras.layers.SimpleConv(
+                        sender_edge_feature=tfgnn.HIDDEN_STATE,
+                        message_fn=dense_with_regularization(hidden_dim),
+                        reduce_type="sum",
+                        receiver_tag=tfgnn.TARGET)},
+                    tfgnn.keras.layers.NextStateFromConcat(
+                        dense_with_regularization(hidden_dim)))}
+        )(graph)
+    
+    # Extract final node representations using context pooling
+    # Pool node states back to the original batch structure
+    node_features = tfgnn.keras.layers.Pool(
+        tfgnn.CONTEXT, "mean", node_set_name="entities")(graph)
+    
+    # Since we're doing reconstruction, we need to unpool back to nodes
+    # For simplicity, we'll use a different approach - extract node features directly
+    # Note: This requires the graph to maintain node indexing
+    node_features = graph.node_sets["entities"][tfgnn.HIDDEN_STATE]
+    
+    # Create embeddings with regularization
+    embeddings = dense_with_regularization(
+        output_dim, activation="tanh")(node_features)
+    embeddings = tf.keras.layers.Lambda(
+        lambda x: x, name="embeddings")(embeddings)
+    
+    # Reconstruction pathway for anomaly detection
+    reconstructed = dense_with_regularization(
+        hidden_dim, activation="relu")(embeddings)
+    # Final reconstruction layer without dropout to preserve quality
+    reconstructed = tf.keras.layers.Dense(
+        node_feature_dim, 
+        kernel_regularizer=tf.keras.regularizers.l2(l2_regularization),
+        name="reconstructed")(reconstructed)
+    
+    model = tf.keras.Model(
+        inputs=input_graph,
+        outputs={
+            'embeddings': embeddings,
+            'reconstructed': reconstructed
+        }
+    )
+    
+    return model
+
+
+def train_model_standalone(model: tf.keras.Model, 
+                          graph_tensor: tfgnn.GraphTensor,
+                          output_dim: int = 32,
+                          epochs: int = 50) -> Dict:
+    """Standalone training function for direct use in notebooks."""
+    logger.info(f"Training GNN model for {epochs} epochs...")
+    
+    # Get node features for reconstruction target
+    target_features = graph_tensor.node_sets['entities']['features']
+    num_nodes = tf.shape(target_features)[0]
+    dummy_embeddings = tf.zeros((num_nodes, output_dim))
+    
+    # Create a dataset from the single graph
+    # The key is to create a dataset that yields (graph, targets) pairs
+    def data_generator():
+        yield (graph_tensor, {
+            'embeddings': dummy_embeddings,
+            'reconstructed': target_features
+        })
+    
+    # Create dataset with proper output signature
+    dataset = tf.data.Dataset.from_generator(
+        data_generator,
+        output_signature=(
+            graph_tensor.spec,
+            {
+                'embeddings': tf.TensorSpec(shape=(None, output_dim), dtype=tf.float32),
+                'reconstructed': tf.TensorSpec(shape=(None, target_features.shape[1]), dtype=tf.float32)
+            }
+        )
+    )
+    
+    # Batch the dataset (batch size = 1 for single graph)
+    dataset = dataset.batch(1)
+    
+    # Repeat for multiple epochs (model.fit will handle epochs, but this ensures data availability)
+    dataset = dataset.repeat()
+    
+    # Compile model
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+        loss={
+            'embeddings': tf.keras.losses.MeanSquaredError(),
+            'reconstructed': tf.keras.losses.MeanSquaredError()
+        },
+        loss_weights={'embeddings': 0.1, 'reconstructed': 0.9}
+    )
+    
+    # Train using model.fit
+    history = model.fit(
+        dataset,
+        steps_per_epoch=1,  # One step per epoch since we have one graph
+        epochs=epochs,
+        verbose=1
+    )
+    
+    return history.history
 
 
 if __name__ == "__main__":
