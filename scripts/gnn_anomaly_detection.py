@@ -91,7 +91,7 @@ class ProcurementGraphBuilder:
 
     
     def create_graph(self, X_processed: pd.DataFrame,
-                     X_original: pd.DataFrame = None) -> Dict:
+                     X_original: pd.DataFrame = None, type: str = 'train') -> Dict:
         """Transform preprocessed procurement data into graph structure.
         
         Args:
@@ -206,7 +206,7 @@ class ProcurementGraphBuilder:
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             'data')
         os.makedirs(data_dir, exist_ok=True)
-        with open(os.path.join(data_dir, 'graph_data.pkl'), 'wb') as f:
+        with open(os.path.join(data_dir, f'graph_data_{type}.pkl'), 'wb') as f:
             pickle.dump(graph_data, f)
         
         return graph_data
@@ -424,7 +424,8 @@ class GNNAnomalyDetector:
         self.output_dim = output_dim
         self.num_layers = num_layers
         self.model = None
-        self.graph_tensor = None
+        self.graph_tensor_train = None
+        self.graph_tensor_test = None
         self.schema = None
         
     def create_tensorflow_graph(self, graph_data: Dict,
@@ -601,7 +602,7 @@ class GNNAnomalyDetector:
         """Train the GNN model."""
         logger.info(f"Training GNN model for {epochs} epochs...")
         
-        self.graph_tensor = graph_tensor
+        self.graph_tensor_train = graph_tensor
         
         # Get node and edge features for reconstruction targets
         node_target_features = graph_tensor.node_sets['entities']['features']
@@ -613,36 +614,37 @@ class GNNAnomalyDetector:
         dummy_node_embeddings = tf.zeros((num_nodes, self.output_dim))
         dummy_edge_embeddings = tf.zeros((num_edges, self.output_dim))
         
-        # Add batch dimension to targets
-        node_target_features_batched = tf.expand_dims(node_target_features, 0)
-        edge_target_features_batched = tf.expand_dims(edge_target_features, 0)
-        dummy_node_embeddings_batched = tf.expand_dims(dummy_node_embeddings, 0)
-        dummy_edge_embeddings_batched = tf.expand_dims(dummy_edge_embeddings, 0)
+        # Create a dataset from the single graph
+        def data_generator():
+            yield (graph_tensor, {
+                'node_embeddings': dummy_node_embeddings,
+                'edge_embeddings': dummy_edge_embeddings,
+                'node_reconstructed': node_target_features,
+                'edge_reconstructed': edge_target_features
+            })
         
-        # Add batch dimension to graph tensor properly
-        batched_graph = tfgnn.GraphTensor.from_pieces(
-            node_sets={
-                "entities": tfgnn.NodeSet.from_fields(
-                    features={
-                        "features": tf.expand_dims(
-                            graph_tensor.node_sets["entities"]["features"], 0),
-                        "node_type": tf.expand_dims(
-                            graph_tensor.node_sets["entities"]["node_type"], 0)
-                    },
-                    sizes=graph_tensor.node_sets["entities"].sizes
-                )
-            },
-            edge_sets={
-                "contracts": tfgnn.EdgeSet.from_fields(
-                    features={
-                        "features": tf.expand_dims(
-                            graph_tensor.edge_sets["contracts"]["features"], 0)
-                    },
-                    sizes=graph_tensor.edge_sets["contracts"].sizes,
-                    adjacency=graph_tensor.edge_sets["contracts"].adjacency
-                )
-            }
+        # Create dataset with proper output signature
+        dataset = tf.data.Dataset.from_generator(
+            data_generator,
+            output_signature=(
+                graph_tensor.spec,
+                {
+                    'node_embeddings': tf.TensorSpec(
+                        shape=(None, self.output_dim), dtype=tf.float32),
+                    'edge_embeddings': tf.TensorSpec(
+                        shape=(None, self.output_dim), dtype=tf.float32),
+                    'node_reconstructed': tf.TensorSpec(
+                        shape=(None, node_target_features.shape[1]), 
+                        dtype=tf.float32),
+                    'edge_reconstructed': tf.TensorSpec(
+                        shape=(None, edge_target_features.shape[1]), 
+                        dtype=tf.float32)
+                }
+            )
         )
+        
+        # Repeat for multiple epochs
+        dataset = dataset.repeat()
         
         # Compile model
         self.model.compile(
@@ -657,13 +659,10 @@ class GNNAnomalyDetector:
                          'node_reconstructed': 0.45, 'edge_reconstructed': 0.45}
         )
         
-        # Train
+        # Train using model.fit
         history = self.model.fit(
-            batched_graph,
-            {'node_embeddings': dummy_node_embeddings_batched,
-             'edge_embeddings': dummy_edge_embeddings_batched,
-             'node_reconstructed': node_target_features_batched,
-             'edge_reconstructed': edge_target_features_batched},
+            dataset,
+            steps_per_epoch=1,  # One step per epoch since we have one graph
             epochs=epochs,
             verbose=1
         )
@@ -1028,31 +1027,49 @@ def main():
         X = graph_builder.load_data(DATA_PATH)
         X_train_preproc, X_test_preproc, X_train, X_test = graph_builder.preprocess_data(X)
         
-        # Create graph from preprocessed data
-        graph_data = graph_builder.create_graph(X_train_preproc, X_train)
+        # Create graph from TRAINING data for model training
+        train_graph_data = graph_builder.create_graph(X_train_preproc, X_train)
         
-        # Scale features before creating TensorFlow graph
-        node_features = graph_data['node_features']
-        edge_features = graph_data['edge_features']
+        # Scale features using training data
+        train_node_features = train_graph_data['node_features']
+        train_edge_features = train_graph_data['edge_features']
         
-        # Scale the features
-        node_features_scaled = graph_builder.node_scaler.fit_transform(
-            node_features)
-        edge_features_scaled = graph_builder.edge_scaler.fit_transform(
-            edge_features)
+        # Fit scalers on training data
+        train_node_features_scaled = graph_builder.node_scaler.fit_transform(
+            train_node_features)
+        train_edge_features_scaled = graph_builder.edge_scaler.fit_transform(
+            train_edge_features)
         
-        # Create TensorFlow graph
-        graph_tensor = gnn_detector.create_tensorflow_graph(
-            graph_data, node_features_scaled, edge_features_scaled)
+        # Create TensorFlow graph for training
+        train_graph_tensor = gnn_detector.create_tensorflow_graph(
+            train_graph_data, train_node_features_scaled, train_edge_features_scaled)
         
         # Build model
         gnn_detector.model = gnn_detector.build_model(
-            node_features_scaled.shape[1], edge_features_scaled.shape[1])
+            train_node_features_scaled.shape[1], train_edge_features_scaled.shape[1])
         
-        # Train model
-        history = gnn_detector.train(graph_tensor, epochs=50)
+        # Train model on training data
+        history = gnn_detector.train(train_graph_tensor, epochs=50)
         
-        # Detect anomalies
+        # Create graph from TEST data for anomaly detection
+        test_graph_data = graph_builder.create_graph(X_test_preproc, X_test)
+        
+        # Scale test features using training data scalers (transform only, no fit)
+        test_node_features = test_graph_data['node_features']
+        test_edge_features = test_graph_data['edge_features']
+        test_node_features_scaled = graph_builder.node_scaler.transform(
+            test_node_features)
+        test_edge_features_scaled = graph_builder.edge_scaler.transform(
+            test_edge_features)
+        
+        # Create TensorFlow graph for testing
+        test_graph_tensor = gnn_detector.create_tensorflow_graph(
+            test_graph_data, test_node_features_scaled, test_edge_features_scaled)
+        
+        # Store test graph for anomaly detection
+        gnn_detector.graph_tensor = test_graph_tensor
+        
+        # Detect anomalies on TEST data
         (node_reconstruction_error, edge_reconstruction_error, 
          node_threshold, edge_threshold) = gnn_detector.detect_anomalies()
         
@@ -1060,21 +1077,37 @@ def main():
         node_anomalies = node_reconstruction_error > node_threshold
         edge_anomalies = edge_reconstruction_error > edge_threshold
         
-        # Get embeddings for analysis
-        predictions = gnn_detector.model.predict(graph_tensor)
+        # OPTIONAL: Also evaluate on training data for comparison
+        logger.info("Evaluating model on training data for comparison...")
+        gnn_detector.graph_tensor = train_graph_tensor
+        (train_node_error, train_edge_error, _, _) = gnn_detector.detect_anomalies(
+            threshold_percentile=95)
+        train_node_anomalies = train_node_error > node_threshold
+        train_edge_anomalies = train_edge_error > edge_threshold
+        
+        print(f"Training data anomalies: {np.sum(train_node_anomalies)} nodes "
+              f"({np.sum(train_node_anomalies)/len(train_node_anomalies)*100:.1f}%), "
+              f"{np.sum(train_edge_anomalies)} edges "
+              f"({np.sum(train_edge_anomalies)/len(train_edge_anomalies)*100:.1f}%)")
+        
+        # Reset to test data for final analysis
+        gnn_detector.graph_tensor = test_graph_tensor
+        
+        # Get embeddings for analysis from TEST data
+        predictions = gnn_detector.model.predict(test_graph_tensor)
         node_embeddings = predictions['node_embeddings']
         edge_embeddings = predictions['edge_embeddings']
         
-        # Create results DataFrames
+        # Create results DataFrames using TEST data
         results_df = analyzer.create_results_dataframe(
-            graph_data, node_reconstruction_error, node_anomalies)
+            test_graph_data, node_reconstruction_error, node_anomalies)
         
         edge_results_df = analyzer.create_edge_results_dataframe(
-            graph_data, edge_reconstruction_error, edge_anomalies)
+            test_graph_data, edge_reconstruction_error, edge_anomalies)
         
         # Analyze communities
         communities_info = analyzer.analyze_anomalous_communities(
-            graph_data, results_df, node_embeddings, edge_embeddings)
+            test_graph_data, results_df, node_embeddings, edge_embeddings)
         
         # Visualize results
         analyzer.plot_results(results_df, node_reconstruction_error, 
@@ -1096,10 +1129,14 @@ def main():
         print("\n" + "="*60)
         print("GNN ANOMALY DETECTION SUMMARY")
         print("="*60)
-        print(f"Total entities analyzed: {len(graph_data['nodes'])}")
-        print(f"- Buyers: {np.sum(graph_data['node_types'] == 0)}")
-        print(f"- Suppliers: {np.sum(graph_data['node_types'] == 1)}")
-        print(f"Total contracts analyzed: {len(graph_data['edges'])}")
+        print(f"Training entities: {len(train_graph_data['nodes'])}")
+        print(f"- Training buyers: {np.sum(train_graph_data['node_types'] == 0)}")
+        print(f"- Training suppliers: {np.sum(train_graph_data['node_types'] == 1)}")
+        print(f"Training contracts: {len(train_graph_data['edges'])}")
+        print(f"\nTest entities analyzed: {len(test_graph_data['nodes'])}")
+        print(f"- Test buyers: {np.sum(test_graph_data['node_types'] == 0)}")
+        print(f"- Test suppliers: {np.sum(test_graph_data['node_types'] == 1)}")
+        print(f"Test contracts analyzed: {len(test_graph_data['edges'])}")
         
         print(f"\nNode anomalies detected: {np.sum(node_anomalies)} "
               f"({np.sum(node_anomalies)/len(node_anomalies)*100:.1f}%)")
@@ -1140,9 +1177,9 @@ def main():
             ['buyer_name', 'supplier_name', 'amount', 'edge_reconstruction_error']]
         print(top_edge_anomalies.to_string(index=False))
         
-        # Visualize the full procurement graph
-        graph_builder.visualize_procurement_graph(graph_data, 
-            "French Public Procurement Network")
+        # Visualize the test procurement graph
+        graph_builder.visualize_procurement_graph(test_graph_data, 
+            "French Public Procurement Network (Test Set)")
         
         logger.info("GNN Anomaly Detection completed successfully!")
         
