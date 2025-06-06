@@ -442,8 +442,10 @@ class GNNAnomalyDetector:
                     features={
                         "features": tf.constant(node_features_scaled,
                                                 dtype=tf.float32),
-                        "node_type": tf.constant(np.array(graph_data['node_types'], dtype=np.int32),
-                                               dtype=tf.int32)
+                        "node_type": tf.constant(
+                            np.array(graph_data['node_types'], 
+                                   dtype=np.int32),
+                            dtype=tf.int32)
                     },
                     sizes=tf.constant([len(node_features_scaled)],
                                       dtype=tf.int32)
@@ -459,11 +461,13 @@ class GNNAnomalyDetector:
                                       dtype=tf.int32),
                     adjacency=tfgnn.Adjacency.from_indices(
                         source=("entities",
-                                tf.constant(graph_data['edges'][:, 0].astype(np.int32),
-                                            dtype=tf.int32)),
+                                tf.constant(
+                                    graph_data['edges'][:, 0].astype(np.int32),
+                                    dtype=tf.int32)),
                         target=("entities",
-                                tf.constant(graph_data['edges'][:, 1].astype(np.int32),
-                                            dtype=tf.int32))
+                                tf.constant(
+                                    graph_data['edges'][:, 1].astype(np.int32),
+                                    dtype=tf.int32))
                     )
                 )
             }
@@ -491,7 +495,7 @@ class GNNAnomalyDetector:
                 tf.keras.layers.Dropout(dropout_rate)
             ])
         
-        # Create input spec with single node set using correct API
+        # Create input spec for batched graphs
         input_spec = tfgnn.GraphTensorSpec.from_piece_specs(
             node_sets_spec={
                 "entities": tfgnn.NodeSetSpec.from_field_specs(
@@ -502,7 +506,7 @@ class GNNAnomalyDetector:
                         "node_type": tf.TensorSpec(shape=(None,),
                                                    dtype=tf.int32)
                     },
-                    sizes_spec=tf.TensorSpec(shape=(1,), dtype=tf.int32)
+                    sizes_spec=tf.TensorSpec(shape=(None,), dtype=tf.int32)
                 )
             },
             edge_sets_spec={
@@ -512,7 +516,7 @@ class GNNAnomalyDetector:
                             shape=(None, edge_feature_dim),
                             dtype=tf.float32)
                     },
-                    sizes_spec=tf.TensorSpec(shape=(1,), dtype=tf.int32),
+                    sizes_spec=tf.TensorSpec(shape=(None,), dtype=tf.int32),
                     adjacency_spec=tfgnn.AdjacencySpec.from_incident_node_sets(
                         source_node_set="entities",
                         target_node_set="entities"
@@ -523,7 +527,8 @@ class GNNAnomalyDetector:
         
         # Input layer
         input_graph = tf.keras.layers.Input(type_spec=input_spec)
-        graph = input_graph
+        # Merge batch to components for proper processing
+        graph = input_graph.merge_batch_to_components()
         
         # Initialize hidden states for both nodes and edges
         def set_initial_node_state(node_set, *, node_set_name):
@@ -669,24 +674,41 @@ class GNNAnomalyDetector:
         
         return history.history
     
-    def detect_anomalies(self, threshold_percentile: float = 95
+    def detect_anomalies(self, graph_tensor: tfgnn.GraphTensor = None,
+                         threshold_percentile: float = 95
                          ) -> Tuple[np.ndarray, np.ndarray, float, float]:
         """Detect anomalies based on reconstruction error."""
         logger.info("Detecting node and edge anomalies...")
         
-        if self.model is None or self.graph_tensor is None:
+        if self.model is None:
             raise ValueError("Model must be trained before detecting "
                              "anomalies")
         
-        # Get predictions
-        predictions = self.model.predict(self.graph_tensor)
+        # Use provided graph_tensor or default to test tensor
+        if graph_tensor is None:
+            if self.graph_tensor_test is None:
+                raise ValueError("No graph tensor provided and no test tensor available")
+            graph_tensor = self.graph_tensor_test
+            print('graph_tensor is self.graph_tensor_test')
+        
+        # Get predictions by creating a dataset and batching properly
+        def data_generator():
+            yield graph_tensor
+        
+        dataset = tf.data.Dataset.from_generator(
+            data_generator,
+            output_signature=graph_tensor.spec
+        )
+        dataset = dataset.batch(1)
+        
+        predictions = self.model.predict(dataset)
         node_reconstructed = predictions['node_reconstructed']
         edge_reconstructed = predictions['edge_reconstructed']
         
         # Calculate reconstruction errors
-        original_node_features = (self.graph_tensor.node_sets['entities']
+        original_node_features = (graph_tensor.node_sets['entities']
                               ['features'].numpy())
-        original_edge_features = (self.graph_tensor.edge_sets['contracts']
+        original_edge_features = (graph_tensor.edge_sets['contracts']
                               ['features'].numpy())
         
         node_reconstruction_error = np.mean((original_node_features - 
@@ -1066,8 +1088,8 @@ def main():
         test_graph_tensor = gnn_detector.create_tensorflow_graph(
             test_graph_data, test_node_features_scaled, test_edge_features_scaled)
         
-        # Store test graph for anomaly detection
-        gnn_detector.graph_tensor = test_graph_tensor
+        # Store both graph tensors
+        gnn_detector.graph_tensor_test = test_graph_tensor
         
         # Detect anomalies on TEST data
         (node_reconstruction_error, edge_reconstruction_error, 
@@ -1079,9 +1101,8 @@ def main():
         
         # OPTIONAL: Also evaluate on training data for comparison
         logger.info("Evaluating model on training data for comparison...")
-        gnn_detector.graph_tensor = train_graph_tensor
         (train_node_error, train_edge_error, _, _) = gnn_detector.detect_anomalies(
-            threshold_percentile=95)
+            graph_tensor=train_graph_tensor, threshold_percentile=95)
         train_node_anomalies = train_node_error > node_threshold
         train_edge_anomalies = train_edge_error > edge_threshold
         
@@ -1090,11 +1111,8 @@ def main():
               f"{np.sum(train_edge_anomalies)} edges "
               f"({np.sum(train_edge_anomalies)/len(train_edge_anomalies)*100:.1f}%)")
         
-        # Reset to test data for final analysis
-        gnn_detector.graph_tensor = test_graph_tensor
-        
         # Get embeddings for analysis from TEST data
-        predictions = gnn_detector.model.predict(test_graph_tensor)
+        predictions = gnn_detector.model.predict(gnn_detector.graph_tensor_test)
         node_embeddings = predictions['node_embeddings']
         edge_embeddings = predictions['edge_embeddings']
         
@@ -1381,29 +1399,39 @@ gnn_detector = GNNAnomalyDetector(hidden_dim=64, output_dim=32, num_layers=3)
 X = graph_builder.load_data(DATA_PATH)  # Replace DATA_PATH with your path
 X_train_preproc, X_test_preproc, X_train, X_test = graph_builder.preprocess_data(X)
 
-# 3. Create graph from preprocessed data - THIS CREATES THE NODE AND EDGE FEATURES
-graph_data = graph_builder.create_graph(X_train_preproc, X_train)
+# 3. Create train graph from preprocessed data
+train_graph_data = graph_builder.create_graph(X_train_preproc, X_train, type='train')
 
-# 4. NOW you can access the features from graph_data
-node_features = graph_data['node_features']
-edge_features = graph_data['edge_features']
+# 4. Scale the training features
+train_node_features = train_graph_data['node_features']
+train_edge_features = train_graph_data['edge_features']
+train_node_features_scaled = graph_builder.node_scaler.fit_transform(train_node_features)
+train_edge_features_scaled = graph_builder.edge_scaler.fit_transform(train_edge_features)
 
-# 5. Scale the features
-node_features_scaled = graph_builder.node_scaler.fit_transform(node_features)
-edge_features_scaled = graph_builder.edge_scaler.fit_transform(edge_features)
+# 5. Create TensorFlow training graph
+train_graph_tensor = gnn_detector.create_tensorflow_graph(
+    train_graph_data, train_node_features_scaled, train_edge_features_scaled)
 
-# 6. Create TensorFlow graph
-graph_tensor = gnn_detector.create_tensorflow_graph(
-    graph_data, node_features_scaled, edge_features_scaled)
-
-# 7. Build and train model
+# 6. Build and train model
 gnn_detector.model = gnn_detector.build_model(
-    node_features_scaled.shape[1], edge_features_scaled.shape[1])
+    train_node_features_scaled.shape[1], train_edge_features_scaled.shape[1])
 
-# 8. Train
-history = gnn_detector.train(graph_tensor, epochs=50)
+# 7. Train
+history = gnn_detector.train(train_graph_tensor, epochs=50)
 
-# 9. Detect anomalies
+# 8. Create test graph
+test_graph_data = graph_builder.create_graph(X_test_preproc, X_test, type='test')
+test_node_features_scaled = graph_builder.node_scaler.transform(test_graph_data['node_features'])
+test_edge_features_scaled = graph_builder.edge_scaler.transform(test_graph_data['edge_features'])
+test_graph_tensor = gnn_detector.create_tensorflow_graph(
+    test_graph_data, test_node_features_scaled, test_edge_features_scaled)
+gnn_detector.graph_tensor_test = test_graph_tensor
+
+# 9. Detect anomalies on test data
 (node_reconstruction_error, edge_reconstruction_error, 
  node_threshold, edge_threshold) = gnn_detector.detect_anomalies()
+
+# 10. Optionally detect anomalies on training data for comparison
+(train_node_error, train_edge_error, _, _) = gnn_detector.detect_anomalies(
+    graph_tensor=train_graph_tensor, threshold_percentile=95)
 """ 
