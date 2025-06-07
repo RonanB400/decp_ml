@@ -672,10 +672,19 @@ class GNNAnomalyDetector:
             verbose=1
         )
         
+        # Save the trained model to the data folder using SavedModel format
+        data_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            'data')
+        os.makedirs(data_dir, exist_ok=True)
+        model_path = os.path.join(data_dir, 'gnn_anomaly_model')
+        tf.saved_model.save(self.model, model_path)
+        logger.info(f"Model saved to {model_path}")
+        
         return history.history
     
     def detect_anomalies(self, graph_tensor: tfgnn.GraphTensor = None,
-                         threshold_percentile: float = 95
+                         threshold_percentile: float = 99
                          ) -> Tuple[np.ndarray, np.ndarray, float, float]:
         """Detect anomalies based on reconstruction error."""
         logger.info("Detecting node and edge anomalies...")
@@ -739,13 +748,13 @@ class AnomalyAnalyzer:
     def __init__(self):
         pass
     
-    def create_results_dataframe(self, graph_data: Dict,
+    def create_node_results_dataframe(self, graph_data: Dict,
                                  node_reconstruction_error: np.ndarray,
                                  node_anomalies: np.ndarray) -> pd.DataFrame:
         """Create a comprehensive results DataFrame for nodes."""
         # Create basic results dataframe
         results = {
-            'entity_name': graph_data['nodes'],
+            'entity_id': graph_data['nodes'],
             'entity_type': ['Buyer' if t == 0 else 'Supplier'
                            for t in graph_data['node_types']],
             'node_reconstruction_error': node_reconstruction_error,
@@ -779,21 +788,47 @@ class AnomalyAnalyzer:
         """Create a comprehensive results DataFrame for edges (contracts)."""
         contract_data = graph_data['contract_data']
         
-        return pd.DataFrame({
+        # Base data dictionary with required fields
+        results_dict = {
             'contract_id': graph_data['contract_ids'],
-            'buyer_name': contract_data['acheteur_id'].values,
-            'supplier_name': contract_data['titulaire_id'].values,
-            'amount': contract_data['montant'].values,
-            'cpv_code': contract_data['codeCPV_3'].values,
-            'procedure': contract_data['procedure'].values,
-            'notification_date': contract_data['dateNotification'].values,
             'edge_reconstruction_error': edge_reconstruction_error,
-            'is_edge_anomaly': edge_anomalies,
-            'log_amount': graph_data['edge_features'][:, 0],
-            'cpv_hash': graph_data['edge_features'][:, 1],
-            'procedure_hash': graph_data['edge_features'][:, 2],
-            'duration_months': graph_data['edge_features'][:, 3]
-        }).sort_values('edge_reconstruction_error', ascending=False)
+            'is_edge_anomaly': edge_anomalies
+        }
+        
+        # Add required contract data fields with safe access
+        required_fields = ['acheteur_id', 'titulaire_id', 'montant']
+        
+        for contract_col in required_fields:
+            if contract_col in contract_data.columns:
+                results_dict[contract_col] = contract_data[contract_col].values
+            else:
+                # Fill with placeholder if required field is missing
+                results_dict[contract_col] = ['Unknown'] * len(edge_reconstruction_error)
+                logger.warning(f"Required column '{contract_col}' not found in contract_data")
+        
+        # Add optional contract data fields with safe access
+        optional_fields = ['codeCPV_3', 'procedure', 'dateNotification']
+        
+        for contract_col in optional_fields:
+            if contract_col in contract_data.columns:
+                results_dict[contract_col] = contract_data[contract_col].values
+            else:
+                # Fill with None/placeholder if optional field is missing
+                results_dict[contract_col] = [None] * len(edge_reconstruction_error)
+                logger.info(f"Optional column '{contract_col}' not found in contract_data, using None")
+        
+        # Add edge features with safe indexing
+        edge_features = graph_data['edge_features']
+        edge_feature_names = ['log_amount', 'cpv_hash', 'procedure_hash', 'duration_months']
+        
+        for i, feature_name in enumerate(edge_feature_names):
+            if i < edge_features.shape[1]:
+                results_dict[feature_name] = edge_features[:, i]
+            else:
+                results_dict[feature_name] = [None] * len(edge_reconstruction_error)
+                logger.warning(f"Edge feature column {i} ('{feature_name}') not available in edge_features")
+        
+        return pd.DataFrame(results_dict).sort_values('edge_reconstruction_error', ascending=False)
     
     def plot_results(self, results_df: pd.DataFrame,
                     node_reconstruction_error: np.ndarray,
