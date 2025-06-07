@@ -75,6 +75,8 @@ class ProcurementGraphBuilder:
         nodes_columns = ['acheteur_id', 'titulaire_id']
         
         X_train, X_test = train_test_split(X, test_size=0.2, random_state=0, stratify=X['codeCPV_3'])
+
+        X_train, X_val = train_test_split(X_train, test_size=0.2, random_state=0, stratify=X_train['codeCPV_3'])
         
         preproc_pipeline = create_pipeline(numerical_columns, binary_columns, categorical_columns)
 
@@ -82,11 +84,15 @@ class ProcurementGraphBuilder:
         X_train_preproc.index = X_train.index
         X_train_preproc = pd.concat([X_train_preproc, X_train[nodes_columns]], axis=1)
 
+        X_val_preproc = preproc_pipeline.transform(X_val)
+        X_val_preproc.index = X_val.index
+        X_val_preproc = pd.concat([X_val_preproc, X_val[nodes_columns]], axis=1)
+
         X_test_preproc = preproc_pipeline.transform(X_test)
         X_test_preproc.index = X_test.index
         X_test_preproc = pd.concat([X_test_preproc, X_test[nodes_columns]], axis=1)
         
-        return X_train_preproc, X_test_preproc, X_train, X_test
+        return X_train_preproc, X_val_preproc, X_test_preproc, X_train, X_val, X_test
     
 
     
@@ -425,6 +431,7 @@ class GNNAnomalyDetector:
         self.num_layers = num_layers
         self.model = None
         self.graph_tensor_train = None
+        self.graph_tensor_val = None
         self.graph_tensor_test = None
         self.schema = None
         
@@ -613,23 +620,31 @@ class GNNAnomalyDetector:
         return model
     
     def train(self, graph_tensor: tfgnn.GraphTensor,
+             validation_graph_tensor: tfgnn.GraphTensor = None,
              epochs: int = 50,
-             use_huber_loss: bool = False,
-             validation_split: float = 0.3) -> Dict:
-        """Train the GNN model with simple validation split.
+             use_huber_loss: bool = False) -> Dict:
+        """Train the GNN model with validation data.
         
         Args:
             graph_tensor: Training graph tensor
+            validation_graph_tensor: Optional validation graph tensor
             epochs: Number of training epochs
             use_huber_loss: Whether to use Huber loss for reconstruction
-            validation_split: Fraction of data to use for validation
             
         Returns:
             Training history dictionary
         """
-        logger.info(f"Training GNN model for {epochs} epochs with {validation_split*100}% validation split...")
+        logger.info(f"Training GNN model for {epochs} epochs...")
         
         self.graph_tensor_train = graph_tensor
+        
+        # Use provided validation graph or stored validation graph
+        if validation_graph_tensor is None:
+            validation_graph_tensor = self.graph_tensor_val
+            if validation_graph_tensor is None:
+                logger.warning("No validation data provided and no stored validation graph")
+        else:
+            self.graph_tensor_val = validation_graph_tensor
         
         # Get node and edge features for reconstruction targets
         node_target_features = graph_tensor.node_sets['entities']['features']
@@ -641,7 +656,7 @@ class GNNAnomalyDetector:
         dummy_node_embeddings = tf.zeros((num_nodes, self.output_dim))
         dummy_edge_embeddings = tf.zeros((num_edges, self.output_dim))
         
-        # Create a dataset from the single graph
+        # Create training dataset
         def data_generator():
             yield (graph_tensor, {
                 'node_embeddings': dummy_node_embeddings,
@@ -672,6 +687,46 @@ class GNNAnomalyDetector:
         # Repeat for multiple epochs
         dataset = dataset.repeat()
         
+        # Create validation dataset if provided
+        validation_dataset = None
+        if validation_graph_tensor is not None:
+            # Get validation node and edge features for reconstruction targets
+            val_node_target_features = validation_graph_tensor.node_sets['entities']['features']
+            val_edge_target_features = validation_graph_tensor.edge_sets['contracts']['features']
+            
+            # Create dummy targets for validation embeddings
+            val_num_nodes = tf.shape(val_node_target_features)[0]
+            val_num_edges = tf.shape(val_edge_target_features)[0]
+            val_dummy_node_embeddings = tf.zeros((val_num_nodes, self.output_dim))
+            val_dummy_edge_embeddings = tf.zeros((val_num_edges, self.output_dim))
+            
+            def val_data_generator():
+                yield (validation_graph_tensor, {
+                    'node_embeddings': val_dummy_node_embeddings,
+                    'edge_embeddings': val_dummy_edge_embeddings,
+                    'node_reconstructed': val_node_target_features,
+                    'edge_reconstructed': val_edge_target_features
+                })
+            
+            validation_dataset = tf.data.Dataset.from_generator(
+                val_data_generator,
+                output_signature=(
+                    validation_graph_tensor.spec,
+                    {
+                        'node_embeddings': tf.TensorSpec(
+                            shape=(None, self.output_dim), dtype=tf.float32),
+                        'edge_embeddings': tf.TensorSpec(
+                            shape=(None, self.output_dim), dtype=tf.float32),
+                        'node_reconstructed': tf.TensorSpec(
+                            shape=(None, val_node_target_features.shape[1]), 
+                            dtype=tf.float32),
+                        'edge_reconstructed': tf.TensorSpec(
+                            shape=(None, val_edge_target_features.shape[1]), 
+                            dtype=tf.float32)
+                    }
+                )
+            ).repeat()
+        
         # Create learning rate schedule
         lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
             initial_learning_rate=0.001,
@@ -701,12 +756,13 @@ class GNNAnomalyDetector:
                          'node_reconstructed': 0.65, 'edge_reconstructed': 0.25}
         )
         
-        # Train using model.fit with validation split
+        # Train using model.fit with validation data
         history = self.model.fit(
             dataset,
+            validation_data=validation_dataset,
             steps_per_epoch=1,  # One step per epoch since we have one graph
+            validation_steps=1 if validation_dataset is not None else None,
             epochs=epochs,
-            validation_split=validation_split,
             verbose=1
         )
         
@@ -1275,10 +1331,10 @@ def main():
         gnn_detector.model = gnn_detector.build_model(
             train_node_features_scaled.shape[1], train_edge_features_scaled.shape[1])
         
-        # Train model with validation split
+        # Train model with validation data
         history = gnn_detector.train(train_graph_tensor, 
-                                   epochs=50,
-                                   validation_split=0.3)
+                                   validation_graph_tensor=test_graph_tensor,
+                                   epochs=50)
         
         # Plot training history
         plot_save_path = os.path.join(
