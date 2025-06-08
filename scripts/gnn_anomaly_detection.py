@@ -89,7 +89,8 @@ class ProcurementGraphBuilder:
                                           stratify=X_train['codeCPV_3'], 
                                           shuffle=True)
         
-        preproc_pipeline = create_pipeline(numerical_columns, binary_columns, 
+        preproc_pipeline = create_pipeline(numerical_columns, 
+                                           binary_columns, 
                                          categorical_columns)
 
         X_train_preproc = preproc_pipeline.fit_transform(X_train)
@@ -106,6 +107,8 @@ class ProcurementGraphBuilder:
         logger.info("Generating synthetic anomalies for test set...")
         generator = SyntheticAnomalyGenerator(random_seed=42)
         X_test_copy = X_test.copy()
+        # Reset index to avoid index mismatch issues
+        X_test_copy = X_test_copy.reset_index(drop=True)
 
         anomaly_types = ['single_bid_competitive', 
                         'price_inflation',
@@ -120,14 +123,15 @@ class ProcurementGraphBuilder:
 
         # Generate anomalies
         X_test_anomalies = generator.generate_anomalies(
-                                                        X_test_copy,
-                                                        anomaly_percentage=0.10,  # 10% anomalies
-                                                        anomaly_types=anomaly_types
-                                                        )
+            X_test_copy,
+            anomaly_percentage=0.10,  # 10% anomalies
+            anomaly_types=anomaly_types
+        )
 
         X_test_preproc = preproc_pipeline.transform(X_test_anomalies)
         X_test_preproc.index = X_test_anomalies.index
-        X_test_preproc = pd.concat([X_test_preproc, X_test_anomalies[nodes_columns]], axis=1)
+        X_test_preproc = pd.concat([X_test_preproc, 
+                                   X_test_anomalies[nodes_columns]], axis=1)
 
         # Save the data to csv files
         data_dir = os.path.join(
@@ -137,7 +141,8 @@ class ProcurementGraphBuilder:
 
         X_train_output_path = os.path.join(data_dir, 'X_train.csv')
         X_val_output_path = os.path.join(data_dir, 'X_val.csv')
-        X_test_anomalies_output_path = os.path.join(data_dir, 'X_test_anomalies.csv')
+        X_test_anomalies_output_path = os.path.join(data_dir, 
+                                                    'X_test_anomalies.csv')
 
         # Save with index=False to avoid saving row indices
         X_train.to_csv(X_train_output_path, index=True)
@@ -1405,9 +1410,15 @@ class GNNAnomalyDetector:
 
 
     def detect_node_anomalies(self, graph_tensor: tfgnn.GraphTensor = None,
-                              threshold_percentile: float = 99
+                              threshold_percentile: float = 10
                               ) -> Tuple[np.ndarray, float]:
-        """Detect node anomalies based on reconstruction error."""
+        """Detect node anomalies based on reconstruction error.
+        
+        Args:
+            graph_tensor: Graph tensor to analyze (uses test tensor if None)
+            threshold_percentile: Percentage of nodes to flag as anomalies 
+                                (e.g., 10 means top 10% will be anomalies)
+        """
         logger.info("Detecting node anomalies...")
         
         if self.node_model is None:
@@ -1442,8 +1453,10 @@ class GNNAnomalyDetector:
                                            node_reconstructed) ** 2, axis=1)
         
         # Determine thresholds and anomalies
+        # Convert anomaly percentage to percentile threshold
+        actual_percentile = 100 - threshold_percentile
         node_threshold = np.percentile(node_reconstruction_error, 
-                                     threshold_percentile)
+                                     actual_percentile)
         node_anomalies = node_reconstruction_error > node_threshold
         
         logger.info(f"Detected {np.sum(node_anomalies)} node anomalies "
@@ -1452,9 +1465,15 @@ class GNNAnomalyDetector:
         return node_reconstruction_error, node_threshold
 
     def detect_edge_anomalies(self, graph_tensor: tfgnn.GraphTensor = None,
-                              threshold_percentile: float = 99
+                              threshold_percentile: float = 10
                               ) -> Tuple[np.ndarray, float]:
-        """Detect edge anomalies based on reconstruction error."""
+        """Detect edge anomalies based on reconstruction error.
+        
+        Args:
+            graph_tensor: Graph tensor to analyze (uses test tensor if None)
+            threshold_percentile: Percentage of edges to flag as anomalies 
+                                (e.g., 10 means top 10% will be anomalies)
+        """
         logger.info("Detecting edge anomalies...")
         
         if self.edge_model is None:
@@ -1541,7 +1560,9 @@ class GNNAnomalyDetector:
             logger.warning(f"Found {len(edge_reconstruction_error) - len(valid_errors)} NaN errors, using only valid errors for threshold")
         
         # Determine thresholds and anomalies using valid errors
-        edge_threshold = np.percentile(valid_errors, threshold_percentile)
+        # Convert anomaly percentage to percentile threshold
+        actual_percentile = 100 - threshold_percentile
+        edge_threshold = np.percentile(valid_errors, actual_percentile)
         logger.info(f"Edge threshold (from valid errors): {edge_threshold:.6f}")
         
         # For anomaly detection, treat NaN as non-anomalous (conservative approach)
@@ -1946,6 +1967,7 @@ class AnomalyAnalyzer:
                                           test_graph_data: Dict,
                                           edge_reconstruction_error: np.ndarray,
                                           edge_threshold: float,
+                                          threshold_percentile: float = 10,
                                           threshold_percentiles: List[float] = None,
                                           show_plots: bool = True
                                           ) -> Dict:
@@ -2084,7 +2106,7 @@ class AnomalyAnalyzer:
             self._plot_anomaly_type_analysis(results, edge_threshold)
         
         # Print summary
-        self._print_anomaly_analysis_summary(results)
+        self._print_anomaly_analysis_summary(results, threshold_percentile)
         
         return results
     
@@ -2308,7 +2330,8 @@ class AnomalyAnalyzer:
         
         plt.show()
     
-    def _print_anomaly_analysis_summary(self, results: Dict):
+    def _print_anomaly_analysis_summary(self, results: Dict, 
+                                        threshold_percentile: float):
         """Print a comprehensive summary of the anomaly analysis."""
         
         print("\n" + "="*80)
@@ -2343,8 +2366,8 @@ class AnomalyAnalyzer:
         # Performance by anomaly type
         print(f"\nPerformance by Anomaly Type:")
         print(f"{'Type':<25} {'Count':<8} {'% Dataset':<10} {'Detection Rate %':<15} "
-              f"{'vs Random':<10} {'Avg Error':<12} {'Status':<10}")
-        print("-" * 95)
+              f"{'vs Threshold':<12} {'Avg Error':<12} {'Status':<10}")
+        print("-" * 97)
         
         for anomaly_type in sorted(results['performance_by_type'].keys()):
             perf = results['performance_by_type'][anomaly_type]
@@ -2354,29 +2377,30 @@ class AnomalyAnalyzer:
             
             if anomaly_type == 0:
                 rate = perf['false_positive_rate']
-                # For normal contracts, compare false positive rate to expected rate
-                vs_random = f"N/A"
-                status = "✅ Good" if rate < 0.05 else "⚠️ High FP" if rate < 0.1 else "❌ Very High FP"
+                # For normal contracts, compare false positive rate to threshold
+                threshold_rate = threshold_percentile / 100
+                vs_threshold = f"{rate/threshold_rate:.1f}x" if threshold_rate > 0 else "N/A"
+                status = "✅ Good" if rate < threshold_rate else "⚠️ High FP" if rate < threshold_rate * 2 else "❌ Very High FP"
             else:
                 rate = perf['detection_rate']
-                # Compare detection rate to random baseline (dataset percentage)
-                random_baseline = dataset_percentage / 100
-                improvement_factor = rate / random_baseline if random_baseline > 0 else float('inf')
-                vs_random = f"{improvement_factor:.1f}x"
+                # Compare detection rate to threshold percentage 
+                threshold_rate = threshold_percentile / 100
+                improvement_factor = rate / threshold_rate if threshold_rate > 0 else float('inf')
+                vs_threshold = f"{improvement_factor:.1f}x"
                 
-                # Update status to consider baseline performance
-                if rate > 0.8:
+                # Update status to consider threshold performance
+                if improvement_factor > 2.0:
                     status = "✅ Excellent"
-                elif rate > 0.5:
-                    status = "⚠️ Good" if improvement_factor > 2.0 else "⚠️ Weak"
-                elif improvement_factor > 3.0:
+                elif improvement_factor > 1.5:
                     status = "⚠️ Good"
+                elif improvement_factor > 0.8:
+                    status = "⚠️ Weak"
                 else:
                     status = "❌ Poor"
             
             type_name = perf['name'][:23] + "..." if len(perf['name']) > 23 else perf['name']
             print(f"{type_name:<25} {perf['count']:<8} {dataset_percentage:<10.1f} {rate*100:<15.1f} "
-                  f"{vs_random:<10} {perf['avg_reconstruction_error']:<12.6f} {status:<10}")
+                  f"{vs_threshold:<12} {perf['avg_reconstruction_error']:<12.6f} {status:<10}")
         
         # Best and worst performing anomaly types
         anomaly_performances = []
@@ -2398,10 +2422,10 @@ class AnomalyAnalyzer:
         # Interpretation guide
         print(f"\nInterpretation Guide:")
         print(f"  - '% Dataset': Percentage of this anomaly type in the full dataset")
-        print(f"  - 'vs Random': How many times better than random selection")
-        print(f"    • 1.0x = Same as random (no learning)")
-        print(f"    • 2.0x = Twice as good as random")
-        print(f"    • >3.0x = Strong anomaly detection")
+        print(f"  - 'vs Threshold': How many times better than threshold percentage ({threshold_percentile}%)")
+        print(f"    • 1.0x = Same as threshold (random performance)")
+        print(f"    • 1.5x = 1.5 times better than threshold")
+        print(f"    • >2.0x = Strong anomaly detection")
         
         # Recommendations
         print(f"\nRecommendations:")
@@ -2417,45 +2441,43 @@ class AnomalyAnalyzer:
                 print(f"  ✅ Low false positive rate ({fp_rate:.1%}). "
                       f"Good threshold setting.")
         
-        # Check overall detection rates vs random baseline
+        # Check overall detection rates vs threshold
         improvement_factors = []
+        threshold_rate = threshold_percentile / 100
         for anomaly_type, perf in results['performance_by_type'].items():
             if anomaly_type != 0:  # Skip normal
-                dataset_percentage = (perf['count'] / total_contracts) * 100
-                random_baseline = dataset_percentage / 100
-                if random_baseline > 0:
-                    improvement_factor = perf['detection_rate'] / random_baseline
+                if threshold_rate > 0:
+                    improvement_factor = perf['detection_rate'] / threshold_rate
                     improvement_factors.append(improvement_factor)
         
         if improvement_factors:
             avg_improvement = np.mean(improvement_factors)
-            if avg_improvement > 3.0:
-                print(f"  ✅ Strong performance vs random baseline "
+            if avg_improvement > 2.0:
+                print(f"  ✅ Strong performance vs threshold "
                       f"({avg_improvement:.1f}x better). Model learns well.")
-            elif avg_improvement > 2.0:
-                print(f"  ⚠️  Moderate performance vs random baseline "
+            elif avg_improvement > 1.5:
+                print(f"  ⚠️  Moderate performance vs threshold "
                       f"({avg_improvement:.1f}x better). Some learning.")
             else:
-                print(f"  ❌ Weak performance vs random baseline "
+                print(f"  ❌ Weak performance vs threshold "
                       f"({avg_improvement:.1f}x better). Limited learning.")
         
-        # Check individual types performing worse than random
+        # Check individual types performing worse than threshold
         poor_performers = []
         for anomaly_type, perf in results['performance_by_type'].items():
             if anomaly_type != 0:  # Skip normal
-                dataset_percentage = (perf['count'] / total_contracts) * 100
-                random_baseline = dataset_percentage / 100
-                if random_baseline > 0:
-                    improvement_factor = perf['detection_rate'] / random_baseline
-                    if improvement_factor < 1.5:  # Less than 1.5x random
+                if threshold_rate > 0:
+                    improvement_factor = perf['detection_rate'] / threshold_rate
+                    if improvement_factor < 1.2:  # Less than 1.2x threshold
                         poor_performers.append((perf['name'], improvement_factor))
         
         if poor_performers:
-            print(f"  ⚠️  Anomaly types performing poorly vs random:")
+            print(f"  ⚠️  Anomaly types performing poorly vs threshold:")
             for name, factor in poor_performers:
-                print(f"    • {name}: {factor:.1f}x random")
+                print(f"    • {name}: {factor:.1f}x threshold")
         
         print("\n" + "="*95)
+
 
 
 def main():

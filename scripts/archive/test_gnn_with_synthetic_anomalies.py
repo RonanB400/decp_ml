@@ -18,7 +18,7 @@ from typing import Dict, List, Tuple, Optional
 from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, precision_recall_curve, roc_curve
 import warnings
 
-from scripts.synthetic_anomaly_generator import SyntheticAnomalyGenerator
+from scripts.archive.synthetic_anomaly_generator_v0 import SyntheticAnomalyGenerator
 from scripts.gnn_anomaly_detection import ProcurementGraphBuilder, GNNAnomalyDetector, AnomalyAnalyzer
 
 # Configure logging
