@@ -16,7 +16,7 @@ import os
 # Add the scripts directory to the path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from synthetic_anomaly_generator_v2 import SyntheticAnomalyGenerator
+from scripts.synthetic_anomaly_generator import SyntheticAnomalyGenerator
 
 
 def example_with_sample_data():

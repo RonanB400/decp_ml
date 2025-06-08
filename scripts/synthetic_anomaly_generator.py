@@ -180,7 +180,8 @@ class SyntheticAnomalyGenerator:
         """Generate new rows with single bid competitive anomalies."""
         
         # Find competitive procedures with more than 1 bid as templates
-        competitive_procedures = ["Appel d'offres ouvert", "Appel d'offres restreint"]
+        competitive_procedures = ["Appel d'offres ouvert", 
+                                 "Appel d'offres restreint"]
         
         mask = (df['procedure'].isin(competitive_procedures) & 
                 (df['offresRecues'] > 1) & 
@@ -189,11 +190,14 @@ class SyntheticAnomalyGenerator:
         eligible_rows = df[mask]
         
         if len(eligible_rows) == 0:
-            logger.warning("No eligible contracts found for single_bid_competitive anomalies")
+            logger.warning("No eligible contracts found for single_bid_competitive "
+                          "anomalies")
             return []
         
         # Randomly select template rows
-        selected_rows = eligible_rows.sample(n=min(n_anomalies, len(eligible_rows)), random_state=self.random_seed)
+        selected_rows = eligible_rows.sample(
+            n=min(n_anomalies, len(eligible_rows)), 
+            random_state=self.random_seed)
         
         new_rows = []
         for _, row in selected_rows.iterrows():

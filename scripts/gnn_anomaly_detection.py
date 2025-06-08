@@ -89,31 +89,34 @@ class ProcurementGraphBuilder:
                                           stratify=X_train['codeCPV_3'], 
                                           shuffle=True)
         
-        preproc_pipeline = create_pipeline(numerical_columns, binary_columns, categorical_columns)
+        preproc_pipeline = create_pipeline(numerical_columns, binary_columns, 
+                                         categorical_columns)
 
         X_train_preproc = preproc_pipeline.fit_transform(X_train)
         X_train_preproc.index = X_train.index
-        X_train_preproc = pd.concat([X_train_preproc, X_train[nodes_columns]], axis=1)
+        X_train_preproc = pd.concat([X_train_preproc, X_train[nodes_columns]], 
+                                   axis=1)
 
         X_val_preproc = preproc_pipeline.transform(X_val)
         X_val_preproc.index = X_val.index
-        X_val_preproc = pd.concat([X_val_preproc, X_val[nodes_columns]], axis=1)
+        X_val_preproc = pd.concat([X_val_preproc, X_val[nodes_columns]], 
+                                 axis=1)
 
         # Generate synthetic anomalies for test set
+        logger.info("Generating synthetic anomalies for test set...")
         generator = SyntheticAnomalyGenerator(random_seed=42)
         X_test_copy = X_test.copy()
 
-
-        anomaly_types=['single_bid_competitive', 
-                            'price_inflation',
-                            'price_deflation',
-                            'procedure_manipulation',
-                            'suspicious_modifications',
-                            'high_market_concentration' ,  
-                            'temporal_clustering',
-                            'excessive_subcontracting',
-                            'short_contract_duration',
-                            'suspicious_buyer_supplier_pairs']
+        anomaly_types = ['single_bid_competitive', 
+                        'price_inflation',
+                        'price_deflation',
+                        'procedure_manipulation',
+                        'suspicious_modifications',
+                        'high_market_concentration',  
+                        'temporal_clustering',
+                        'excessive_subcontracting',
+                        'short_contract_duration',
+                        'suspicious_buyer_supplier_pairs']
 
         # Generate anomalies
         X_test_anomalies = generator.generate_anomalies(
@@ -124,7 +127,7 @@ class ProcurementGraphBuilder:
 
         X_test_preproc = preproc_pipeline.transform(X_test_anomalies)
         X_test_preproc.index = X_test_anomalies.index
-        X_test_preproc = pd.concat([X_test_preproc, X_test[nodes_columns]], axis=1)
+        X_test_preproc = pd.concat([X_test_preproc, X_test_anomalies[nodes_columns]], axis=1)
 
         # Save the data to csv files
         data_dir = os.path.join(
@@ -1465,6 +1468,16 @@ class GNNAnomalyDetector:
                                "tensor available")
             graph_tensor = self.graph_tensor_test
         
+        # DEBUG: Check graph tensor edge features
+        original_edge_features = (graph_tensor.edge_sets['contracts']
+                                ['features'].numpy())
+        logger.info(f"Original edge features shape: {original_edge_features.shape}")
+        logger.info(f"Original edge features - NaN count: {np.sum(np.isnan(original_edge_features))}")
+        logger.info(f"Original edge features - Inf count: {np.sum(np.isinf(original_edge_features))}")
+        logger.info(f"Original edge features stats: min={np.nanmin(original_edge_features):.6f}, "
+                   f"max={np.nanmax(original_edge_features):.6f}, "
+                   f"mean={np.nanmean(original_edge_features):.6f}")
+        
         # Get predictions by creating a dataset and batching properly
         def data_generator():
             yield graph_tensor
@@ -1478,22 +1491,136 @@ class GNNAnomalyDetector:
         predictions = self.edge_model.predict(dataset)
         edge_reconstructed = predictions['edge_reconstructed']
         
+        # DEBUG: Check reconstructed features
+        logger.info(f"Reconstructed edge features shape: {edge_reconstructed.shape}")
+        logger.info(f"Reconstructed edge features - NaN count: {np.sum(np.isnan(edge_reconstructed))}")
+        logger.info(f"Reconstructed edge features - Inf count: {np.sum(np.isinf(edge_reconstructed))}")
+        logger.info(f"Reconstructed edge features stats: min={np.nanmin(edge_reconstructed):.6f}, "
+                   f"max={np.nanmax(edge_reconstructed):.6f}, "
+                   f"mean={np.nanmean(edge_reconstructed):.6f}")
+        
+        # DEBUG: Check if shapes match
+        if original_edge_features.shape != edge_reconstructed.shape:
+            logger.error(f"Shape mismatch! Original: {original_edge_features.shape}, "
+                        f"Reconstructed: {edge_reconstructed.shape}")
+            # Try to reshape if possible
+            if original_edge_features.size == edge_reconstructed.size:
+                logger.info("Attempting to reshape to match...")
+                edge_reconstructed = edge_reconstructed.reshape(original_edge_features.shape)
+            else:
+                raise ValueError("Cannot resolve shape mismatch between original and reconstructed features")
+        
         # Calculate reconstruction errors
-        original_edge_features = (graph_tensor.edge_sets['contracts']
-                                ['features'].numpy())
+        diff = original_edge_features - edge_reconstructed
+        logger.info(f"Difference - NaN count: {np.sum(np.isnan(diff))}")
+        logger.info(f"Difference - Inf count: {np.sum(np.isinf(diff))}")
         
-        edge_reconstruction_error = np.mean((original_edge_features - 
-                                           edge_reconstructed) ** 2, axis=1)
+        # Calculate squared differences
+        squared_diff = diff ** 2
+        logger.info(f"Squared difference - NaN count: {np.sum(np.isnan(squared_diff))}")
+        logger.info(f"Squared difference - Inf count: {np.sum(np.isinf(squared_diff))}")
         
-        # Determine thresholds and anomalies
-        edge_threshold = np.percentile(edge_reconstruction_error, 
-                                     threshold_percentile)
-        edge_anomalies = edge_reconstruction_error > edge_threshold
+        # Calculate mean across features (axis=1)
+        edge_reconstruction_error = np.mean(squared_diff, axis=1)
+        
+        # DEBUG: Check reconstruction errors
+        logger.info(f"Reconstruction errors shape: {edge_reconstruction_error.shape}")
+        logger.info(f"Reconstruction errors - NaN count: {np.sum(np.isnan(edge_reconstruction_error))}")
+        logger.info(f"Reconstruction errors - Inf count: {np.sum(np.isinf(edge_reconstruction_error))}")
+        logger.info(f"Reconstruction errors - % NaN: {np.sum(np.isnan(edge_reconstruction_error))/len(edge_reconstruction_error)*100:.1f}%")
+        
+        # Filter out NaN values for threshold calculation
+        valid_errors = edge_reconstruction_error[~np.isnan(edge_reconstruction_error)]
+        logger.info(f"Valid errors count: {len(valid_errors)} out of {len(edge_reconstruction_error)}")
+        
+        if len(valid_errors) == 0:
+            logger.error("All reconstruction errors are NaN! Cannot determine threshold.")
+            return edge_reconstruction_error, 0.0
+        
+        if len(valid_errors) < len(edge_reconstruction_error):
+            logger.warning(f"Found {len(edge_reconstruction_error) - len(valid_errors)} NaN errors, using only valid errors for threshold")
+        
+        # Determine thresholds and anomalies using valid errors
+        edge_threshold = np.percentile(valid_errors, threshold_percentile)
+        logger.info(f"Edge threshold (from valid errors): {edge_threshold:.6f}")
+        
+        # For anomaly detection, treat NaN as non-anomalous (conservative approach)
+        edge_anomalies = np.where(np.isnan(edge_reconstruction_error), 
+                                 False, 
+                                 edge_reconstruction_error > edge_threshold)
         
         logger.info(f"Detected {np.sum(edge_anomalies)} edge anomalies "
                    f"({np.sum(edge_anomalies)/len(edge_anomalies)*100:.1f}%)")
         
         return edge_reconstruction_error, edge_threshold
+
+    def diagnose_edge_model(self, graph_tensor: tfgnn.GraphTensor = None) -> Dict:
+        """Diagnose potential issues with the edge model and features.
+        
+        Returns:
+            Dictionary with diagnostic information
+        """
+        logger.info("Starting edge model diagnostics...")
+        
+        if graph_tensor is None:
+            graph_tensor = self.graph_tensor_test
+            
+        if graph_tensor is None:
+            return {"error": "No graph tensor available for diagnosis"}
+        
+        diagnostics = {}
+        
+        # Check graph tensor structure
+        edge_features = graph_tensor.edge_sets['contracts']['features'].numpy()
+        diagnostics['edge_features_shape'] = edge_features.shape
+        diagnostics['edge_features_nan_count'] = int(np.sum(np.isnan(edge_features)))
+        diagnostics['edge_features_inf_count'] = int(np.sum(np.isinf(edge_features)))
+        diagnostics['edge_features_finite_count'] = int(np.sum(np.isfinite(edge_features)))
+        
+        # Check if model exists and is compiled
+        if self.edge_model is None:
+            diagnostics['edge_model_status'] = "Not built"
+            return diagnostics
+        
+        diagnostics['edge_model_status'] = "Built"
+        diagnostics['edge_model_trainable_params'] = self.edge_model.count_params()
+        
+        # Try a simple prediction
+        try:
+            def data_generator():
+                yield graph_tensor
+            
+            dataset = tf.data.Dataset.from_generator(
+                data_generator, output_signature=graph_tensor.spec
+            )
+            dataset = dataset.batch(1)
+            
+            predictions = self.edge_model.predict(dataset, verbose=0)
+            edge_reconstructed = predictions['edge_reconstructed']
+            
+            diagnostics['prediction_shape'] = edge_reconstructed.shape
+            diagnostics['prediction_nan_count'] = int(np.sum(np.isnan(edge_reconstructed)))
+            diagnostics['prediction_inf_count'] = int(np.sum(np.isinf(edge_reconstructed)))
+            diagnostics['prediction_finite_count'] = int(np.sum(np.isfinite(edge_reconstructed)))
+            
+            if np.all(np.isfinite(edge_reconstructed)):
+                diagnostics['prediction_min'] = float(np.min(edge_reconstructed))
+                diagnostics['prediction_max'] = float(np.max(edge_reconstructed))
+                diagnostics['prediction_mean'] = float(np.mean(edge_reconstructed))
+                diagnostics['prediction_std'] = float(np.std(edge_reconstructed))
+            
+        except Exception as e:
+            diagnostics['prediction_error'] = str(e)
+        
+        # Check feature scaling
+        if hasattr(self, 'edge_scaler') and hasattr(self.edge_scaler, 'scale_'):
+            diagnostics['edge_scaler_scale_shape'] = self.edge_scaler.scale_.shape
+            diagnostics['edge_scaler_scale_nan_count'] = int(np.sum(np.isnan(self.edge_scaler.scale_)))
+            diagnostics['edge_scaler_mean_shape'] = self.edge_scaler.mean_.shape
+            diagnostics['edge_scaler_mean_nan_count'] = int(np.sum(np.isnan(self.edge_scaler.mean_)))
+        
+        logger.info("Edge model diagnostics completed")
+        return diagnostics
 
 
 class AnomalyAnalyzer:
@@ -1819,7 +1946,8 @@ class AnomalyAnalyzer:
                                           test_graph_data: Dict,
                                           edge_reconstruction_error: np.ndarray,
                                           edge_threshold: float,
-                                          threshold_percentiles: List[float] = None
+                                          threshold_percentiles: List[float] = None,
+                                          show_plots: bool = True
                                           ) -> Dict:
         """Analyze how well the model detects different types of synthetic 
         anomalies.
@@ -1829,6 +1957,7 @@ class AnomalyAnalyzer:
             edge_reconstruction_error: Reconstruction errors from edge model
             edge_threshold: Threshold used for anomaly detection
             threshold_percentiles: Different percentiles to test (optional)
+            show_plots: Whether to display plots (default: True)
             
         Returns:
             Dictionary containing analysis results
@@ -1950,8 +2079,9 @@ class AnomalyAnalyzer:
                     'std_reconstruction_error': np.std(type_errors)
                 }
         
-        # Create visualizations
-        self._plot_anomaly_type_analysis(results, edge_threshold)
+        # Create visualizations if requested
+        if show_plots:
+            self._plot_anomaly_type_analysis(results, edge_threshold)
         
         # Print summary
         self._print_anomaly_analysis_summary(results)
@@ -2212,23 +2342,41 @@ class AnomalyAnalyzer:
         
         # Performance by anomaly type
         print(f"\nPerformance by Anomaly Type:")
-        print(f"{'Type':<25} {'Count':<8} {'Detection Rate':<15} "
-              f"{'Avg Error':<12} {'Status':<10}")
-        print("-" * 80)
+        print(f"{'Type':<25} {'Count':<8} {'% Dataset':<10} {'Detection Rate %':<15} "
+              f"{'vs Random':<10} {'Avg Error':<12} {'Status':<10}")
+        print("-" * 95)
         
         for anomaly_type in sorted(results['performance_by_type'].keys()):
             perf = results['performance_by_type'][anomaly_type]
             
+            # Calculate percentage of this anomaly type in the full dataset
+            dataset_percentage = (perf['count'] / total_contracts) * 100
+            
             if anomaly_type == 0:
                 rate = perf['false_positive_rate']
+                # For normal contracts, compare false positive rate to expected rate
+                vs_random = f"N/A"
                 status = "✅ Good" if rate < 0.05 else "⚠️ High FP" if rate < 0.1 else "❌ Very High FP"
             else:
                 rate = perf['detection_rate']
-                status = "✅ Excellent" if rate > 0.8 else "⚠️ Good" if rate > 0.5 else "❌ Poor"
+                # Compare detection rate to random baseline (dataset percentage)
+                random_baseline = dataset_percentage / 100
+                improvement_factor = rate / random_baseline if random_baseline > 0 else float('inf')
+                vs_random = f"{improvement_factor:.1f}x"
+                
+                # Update status to consider baseline performance
+                if rate > 0.8:
+                    status = "✅ Excellent"
+                elif rate > 0.5:
+                    status = "⚠️ Good" if improvement_factor > 2.0 else "⚠️ Weak"
+                elif improvement_factor > 3.0:
+                    status = "⚠️ Good"
+                else:
+                    status = "❌ Poor"
             
             type_name = perf['name'][:23] + "..." if len(perf['name']) > 23 else perf['name']
-            print(f"{type_name:<25} {perf['count']:<8} {rate:<15.3f} "
-                  f"{perf['avg_reconstruction_error']:<12.6f} {status:<10}")
+            print(f"{type_name:<25} {perf['count']:<8} {dataset_percentage:<10.1f} {rate*100:<15.1f} "
+                  f"{vs_random:<10} {perf['avg_reconstruction_error']:<12.6f} {status:<10}")
         
         # Best and worst performing anomaly types
         anomaly_performances = []
@@ -2247,6 +2395,14 @@ class AnomalyAnalyzer:
             for i, (name, rate, count) in enumerate(anomaly_performances[-3:]):
                 print(f"  {len(anomaly_performances)-i}. {name}: {rate:.1%} detection rate (n={count})")
         
+        # Interpretation guide
+        print(f"\nInterpretation Guide:")
+        print(f"  - '% Dataset': Percentage of this anomaly type in the full dataset")
+        print(f"  - 'vs Random': How many times better than random selection")
+        print(f"    • 1.0x = Same as random (no learning)")
+        print(f"    • 2.0x = Twice as good as random")
+        print(f"    • >3.0x = Strong anomaly detection")
+        
         # Recommendations
         print(f"\nRecommendations:")
         
@@ -2261,22 +2417,45 @@ class AnomalyAnalyzer:
                 print(f"  ✅ Low false positive rate ({fp_rate:.1%}). "
                       f"Good threshold setting.")
         
-        # Check overall detection rates
-        avg_detection_rate = np.mean([perf['detection_rate'] 
-                                    for anomaly_type, perf in results['performance_by_type'].items() 
-                                    if anomaly_type != 0])
+        # Check overall detection rates vs random baseline
+        improvement_factors = []
+        for anomaly_type, perf in results['performance_by_type'].items():
+            if anomaly_type != 0:  # Skip normal
+                dataset_percentage = (perf['count'] / total_contracts) * 100
+                random_baseline = dataset_percentage / 100
+                if random_baseline > 0:
+                    improvement_factor = perf['detection_rate'] / random_baseline
+                    improvement_factors.append(improvement_factor)
         
-        if avg_detection_rate > 0.7:
-            print(f"  ✅ High average detection rate ({avg_detection_rate:.1%}). "
-                  f"Model performs well overall.")
-        elif avg_detection_rate > 0.5:
-            print(f"  ⚠️  Moderate average detection rate ({avg_detection_rate:.1%}). "
-                  f"Consider model improvements.")
-        else:
-            print(f"  ❌ Low average detection rate ({avg_detection_rate:.1%}). "
-                  f"Model needs significant improvements.")
+        if improvement_factors:
+            avg_improvement = np.mean(improvement_factors)
+            if avg_improvement > 3.0:
+                print(f"  ✅ Strong performance vs random baseline "
+                      f"({avg_improvement:.1f}x better). Model learns well.")
+            elif avg_improvement > 2.0:
+                print(f"  ⚠️  Moderate performance vs random baseline "
+                      f"({avg_improvement:.1f}x better). Some learning.")
+            else:
+                print(f"  ❌ Weak performance vs random baseline "
+                      f"({avg_improvement:.1f}x better). Limited learning.")
         
-        print("\n" + "="*80)
+        # Check individual types performing worse than random
+        poor_performers = []
+        for anomaly_type, perf in results['performance_by_type'].items():
+            if anomaly_type != 0:  # Skip normal
+                dataset_percentage = (perf['count'] / total_contracts) * 100
+                random_baseline = dataset_percentage / 100
+                if random_baseline > 0:
+                    improvement_factor = perf['detection_rate'] / random_baseline
+                    if improvement_factor < 1.5:  # Less than 1.5x random
+                        poor_performers.append((perf['name'], improvement_factor))
+        
+        if poor_performers:
+            print(f"  ⚠️  Anomaly types performing poorly vs random:")
+            for name, factor in poor_performers:
+                print(f"    • {name}: {factor:.1f}x random")
+        
+        print("\n" + "="*95)
 
 
 def main():
@@ -2284,9 +2463,9 @@ def main():
     logger.info("Starting GNN Anomaly Detection Pipeline...")
     
     # Configuration
-    DATA_PATH = os.path.join(os.path.dirname(os.path.dirname(os.getcwd())),
+    DATA_PATH = os.path.join(os.path.dirname(__file__),
                             'data')
-    MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(os.getcwd())),
+    MODEL_PATH = os.path.join(os.path.dirname(__file__),
                              'models', 'anomalies')
     os.makedirs(MODEL_PATH, exist_ok=True)
     
@@ -2402,7 +2581,8 @@ def main():
         # Analyze synthetic anomaly detection performance
         logger.info("Analyzing synthetic anomaly detection performance...")
         synthetic_analysis = analyzer.analyze_synthetic_anomaly_detection(
-            X_test_graph, edge_reconstruction_error, edge_threshold)
+            X_test_graph, edge_reconstruction_error, edge_threshold, 
+            show_plots=False)  # Set to True if you want to see plots
         
         # OPTIONAL: Also evaluate on training data for comparison
         logger.info("Evaluating models on training data for comparison...")
@@ -2553,7 +2733,8 @@ def main():
 
 def analyze_edge_anomaly_types(test_graph_data: Dict, 
                                edge_reconstruction_error: np.ndarray, 
-                               edge_threshold: float) -> Dict:
+                               edge_threshold: float,
+                               show_plots: bool = True) -> Dict:
     """
     Convenience function to analyze what types of synthetic anomalies 
     the edge model can detect.
@@ -2562,6 +2743,7 @@ def analyze_edge_anomaly_types(test_graph_data: Dict,
         test_graph_data: Graph data from test set
         edge_reconstruction_error: Reconstruction errors from edge model
         edge_threshold: Threshold used for anomaly detection
+        show_plots: Whether to display plots (default: True)
         
     Returns:
         Dictionary with analysis results
@@ -2571,14 +2753,16 @@ def analyze_edge_anomaly_types(test_graph_data: Dict,
         results = analyze_edge_anomaly_types(
             test_graph_data, 
             edge_reconstruction_error, 
-            edge_threshold
+            edge_threshold,
+            show_plots=False  # Add this to suppress plots
         )
     """
     analyzer = AnomalyAnalyzer()
     return analyzer.analyze_synthetic_anomaly_detection(
         test_graph_data, 
         edge_reconstruction_error, 
-        edge_threshold
+        edge_threshold,
+        show_plots=show_plots
     )
 
 
