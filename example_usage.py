@@ -6,7 +6,7 @@ that include node columns in the preprocessed data
 
 import os
 import numpy as np
-from scripts.gnn_anomaly_detection import (
+from scripts.archive.gnn_anomaly_detection_onemodel import (
     ProcurementGraphBuilder, 
     GNNAnomalyDetector, 
     AnomalyAnalyzer

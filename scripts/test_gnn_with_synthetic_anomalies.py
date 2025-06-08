@@ -19,7 +19,7 @@ from sklearn.metrics import classification_report, confusion_matrix, roc_auc_sco
 import warnings
 
 from scripts.synthetic_anomaly_generator import SyntheticAnomalyGenerator
-from scripts.gnn_anomaly_detection_2 import ProcurementGraphBuilder, GNNAnomalyDetector, AnomalyAnalyzer
+from scripts.gnn_anomaly_detection_v2 import ProcurementGraphBuilder, GNNAnomalyDetector, AnomalyAnalyzer
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

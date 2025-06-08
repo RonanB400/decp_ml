@@ -74,17 +74,9 @@ class ProcurementGraphBuilder:
         
         nodes_columns = ['acheteur_id', 'titulaire_id']
         
-        X_train, X_test = train_test_split(X, 
-                                           test_size=0.2, 
-                                           random_state=0, 
-                                           stratify=X['codeCPV_3'], 
-                                           shuffle=True)
+        X_train, X_test = train_test_split(X, test_size=0.2, random_state=0, stratify=X['codeCPV_3'])
 
-        X_train, X_val = train_test_split(X_train, 
-                                          test_size=0.2, 
-                                          random_state=0, 
-                                          stratify=X_train['codeCPV_3'], 
-                                          shuffle=True)
+        X_train, X_val = train_test_split(X_train, test_size=0.2, random_state=0, stratify=X_train['codeCPV_3'])
         
         preproc_pipeline = create_pipeline(numerical_columns, binary_columns, categorical_columns)
 
@@ -437,8 +429,7 @@ class GNNAnomalyDetector:
         self.hidden_dim = hidden_dim
         self.output_dim = output_dim
         self.num_layers = num_layers
-        self.node_model = None
-        self.edge_model = None
+        self.model = None
         self.graph_tensor_train = None
         self.graph_tensor_val = None
         self.graph_tensor_test = None
@@ -491,12 +482,12 @@ class GNNAnomalyDetector:
         
         return graph_tensor
     
-    def build_node_model(self, node_feature_dim: int,
-                         edge_feature_dim: int,
-                         l2_regularization: float = 5e-4,
-                         dropout_rate: float = 0.3) -> tf.keras.Model:
-        """Build the GNN model for node anomaly detection."""
-        logger.info("Building GNN model for node anomaly detection...")
+    def build_model(self, node_feature_dim: int,
+                    edge_feature_dim: int,
+                    l2_regularization: float = 5e-4,
+                    dropout_rate: float = 0.3) -> tf.keras.Model:
+        """Build the GNN model for anomaly detection with proper regularization."""
+        logger.info("Building GNN model with node and edge anomaly detection...")
         
         # Helper function for regularized dense layers
         def dense_with_regularization(units, activation="relu", use_bn=True):
@@ -573,16 +564,16 @@ class GNNAnomalyDetector:
                     "entities": tfgnn.keras.layers.NodeSetUpdate(
                         {"contracts": tfgnn.keras.layers.SimpleConv(
                             sender_edge_feature=tfgnn.HIDDEN_STATE,
-                            message_fn=dense_with_regularization(
-                                self.hidden_dim),
+                            message_fn=dense_with_regularization(self.hidden_dim),
                             reduce_type="sum",
                             receiver_tag=tfgnn.TARGET)},
                         tfgnn.keras.layers.NextStateFromConcat(
                             dense_with_regularization(self.hidden_dim)))}
             )(graph)
         
-        # Extract final node representations
+        # Extract final node and edge representations
         node_features = graph.node_sets["entities"][tfgnn.HIDDEN_STATE]
+        edge_features = graph.edge_sets["contracts"][tfgnn.HIDDEN_STATE]
         
         # Create node embeddings with regularization
         node_embeddings = dense_with_regularization(
@@ -590,135 +581,26 @@ class GNNAnomalyDetector:
         node_embeddings = tf.keras.layers.Lambda(
             lambda x: x, name="node_embeddings")(node_embeddings)
         
-        # Node reconstruction pathway for anomaly detection (enhanced)
-        node_reconstructed = dense_with_regularization(
-            self.hidden_dim * 2, activation="relu")(node_embeddings)
-        node_reconstructed = dense_with_regularization(
-            self.hidden_dim, activation="relu")(node_reconstructed)
-        # Final reconstruction layer without dropout to preserve quality
-        node_reconstructed = tf.keras.layers.Dense(
-            node_feature_dim, 
-            kernel_regularizer=tf.keras.regularizers.l2(l2_regularization),
-            name="node_reconstructed")(node_reconstructed)
-        
-        model = tf.keras.Model(
-            inputs=input_graph,
-            outputs={
-                'node_embeddings': node_embeddings,
-                'node_reconstructed': node_reconstructed
-            }
-        )
-        
-        return model
-
-    def build_edge_model(self, node_feature_dim: int,
-                         edge_feature_dim: int,
-                         l2_regularization: float = 5e-4,
-                         dropout_rate: float = 0.3) -> tf.keras.Model:
-        """Build the GNN model for edge anomaly detection."""
-        logger.info("Building GNN model for edge anomaly detection...")
-        
-        # Helper function for regularized dense layers
-        def dense_with_regularization(units, activation="relu", use_bn=True):
-            """Dense layer with L2 regularization, batch norm, and dropout."""
-            regularizer = tf.keras.regularizers.l2(l2_regularization)
-            layers = [tf.keras.layers.Dense(
-                units,
-                activation=None,  # Apply activation after batch norm
-                kernel_regularizer=regularizer,
-                bias_regularizer=regularizer)]
-            
-            if use_bn:
-                layers.append(tf.keras.layers.BatchNormalization())
-            
-            if activation:
-                layers.append(tf.keras.layers.Activation(activation))
-                
-            if dropout_rate > 0:
-                layers.append(tf.keras.layers.Dropout(dropout_rate))
-                
-            return tf.keras.Sequential(layers)
-        
-        # Create input spec for batched graphs
-        input_spec = tfgnn.GraphTensorSpec.from_piece_specs(
-            node_sets_spec={
-                "entities": tfgnn.NodeSetSpec.from_field_specs(
-                    features_spec={
-                        "features": tf.TensorSpec(
-                            shape=(None, node_feature_dim),
-                            dtype=tf.float32),
-                        "node_type": tf.TensorSpec(shape=(None,),
-                                                   dtype=tf.int32)
-                    },
-                    sizes_spec=tf.TensorSpec(shape=(None,), dtype=tf.int32)
-                )
-            },
-            edge_sets_spec={
-                "contracts": tfgnn.EdgeSetSpec.from_field_specs(
-                    features_spec={
-                        "features": tf.TensorSpec(
-                            shape=(None, edge_feature_dim),
-                            dtype=tf.float32)
-                    },
-                    sizes_spec=tf.TensorSpec(shape=(None,), dtype=tf.int32),
-                    adjacency_spec=tfgnn.AdjacencySpec.from_incident_node_sets(
-                        source_node_set="entities",
-                        target_node_set="entities"
-                    )
-                )
-            }
-        )
-        
-        # Input layer
-        input_graph = tf.keras.layers.Input(type_spec=input_spec)
-        # Merge batch to components for proper processing
-        graph = input_graph.merge_batch_to_components()
-        
-        # Initialize hidden states for both nodes and edges
-        def set_initial_node_state(node_set, *, node_set_name):
-            return tf.keras.layers.Dense(self.hidden_dim)(node_set["features"])
-            
-        def set_initial_edge_state(edge_set, *, edge_set_name):
-            return tf.keras.layers.Dense(self.hidden_dim)(edge_set["features"])
-            
-        graph = tfgnn.keras.layers.MapFeatures(
-            node_sets_fn=set_initial_node_state,
-            edge_sets_fn=set_initial_edge_state
-        )(graph)
-        
-        # GNN message passing layers with regularization
-        for i in range(self.num_layers):
-            graph = tfgnn.keras.layers.GraphUpdate(
-                edge_sets={
-                    "contracts": tfgnn.keras.layers.EdgeSetUpdate(
-                        next_state=tfgnn.keras.layers.NextStateFromConcat(
-                            dense_with_regularization(self.hidden_dim)))},
-                node_sets={
-                    "entities": tfgnn.keras.layers.NodeSetUpdate(
-                        {"contracts": tfgnn.keras.layers.SimpleConv(
-                            sender_edge_feature=tfgnn.HIDDEN_STATE,
-                            message_fn=dense_with_regularization(
-                                self.hidden_dim),
-                            reduce_type="sum",
-                            receiver_tag=tfgnn.TARGET)},
-                        tfgnn.keras.layers.NextStateFromConcat(
-                            dense_with_regularization(self.hidden_dim)))}
-            )(graph)
-        
-        # Extract final edge representations
-        edge_features = graph.edge_sets["contracts"][tfgnn.HIDDEN_STATE]
-        
         # Create edge embeddings with regularization
         edge_embeddings = dense_with_regularization(
             self.output_dim, activation="tanh")(edge_features)
         edge_embeddings = tf.keras.layers.Lambda(
             lambda x: x, name="edge_embeddings")(edge_embeddings)
         
+        # Node reconstruction pathway for anomaly detection (enhanced)
+        node_reconstructed = dense_with_regularization(
+            self.hidden_dim * 2, activation="relu")(node_embeddings)  # Increased capacity
+        node_reconstructed = dense_with_regularization(
+            self.hidden_dim, activation="relu")(node_reconstructed)  # Additional layer
+        # Final reconstruction layer without dropout to preserve quality
+        node_reconstructed = tf.keras.layers.Dense(
+            node_feature_dim, 
+            kernel_regularizer=tf.keras.regularizers.l2(l2_regularization),
+            name="node_reconstructed")(node_reconstructed)
+        
         # Edge reconstruction pathway for anomaly detection
         edge_reconstructed = dense_with_regularization(
-            self.hidden_dim * 2, activation="relu")(edge_embeddings)
-        edge_reconstructed = dense_with_regularization(
-            self.hidden_dim, activation="relu")(edge_reconstructed)
+            self.hidden_dim, activation="relu")(edge_embeddings)
         # Final reconstruction layer without dropout to preserve quality
         edge_reconstructed = tf.keras.layers.Dense(
             edge_feature_dim, 
@@ -728,22 +610,31 @@ class GNNAnomalyDetector:
         model = tf.keras.Model(
             inputs=input_graph,
             outputs={
+                'node_embeddings': node_embeddings,
                 'edge_embeddings': edge_embeddings,
+                'node_reconstructed': node_reconstructed,
                 'edge_reconstructed': edge_reconstructed
             }
         )
         
         return model
     
-    def train_node_model(self, graph_tensor: tfgnn.GraphTensor,
-                         validation_graph_tensor: tfgnn.GraphTensor = None,
-                         epochs: int = 50,
-                         use_huber_loss: bool = False) -> Dict:
-        """Train the node anomaly detection model."""
-        logger.info(f"Training node GNN model for {epochs} epochs...")
+    def train(self, graph_tensor: tfgnn.GraphTensor,
+             validation_graph_tensor: tfgnn.GraphTensor = None,
+             epochs: int = 50,
+             use_huber_loss: bool = False) -> Dict:
+        """Train the GNN model with validation data.
         
-        if self.node_model is None:
-            raise ValueError("Node model must be built before training")
+        Args:
+            graph_tensor: Training graph tensor
+            validation_graph_tensor: Optional validation graph tensor
+            epochs: Number of training epochs
+            use_huber_loss: Whether to use Huber loss for reconstruction
+            
+        Returns:
+            Training history dictionary
+        """
+        logger.info(f"Training GNN model for {epochs} epochs...")
         
         self.graph_tensor_train = graph_tensor
         
@@ -751,37 +642,90 @@ class GNNAnomalyDetector:
         if validation_graph_tensor is None:
             validation_graph_tensor = self.graph_tensor_val
             if validation_graph_tensor is None:
-                logger.warning("No validation data provided and no stored "
-                              "validation graph")
+                logger.warning("No validation data provided and no stored validation graph")
         else:
             self.graph_tensor_val = validation_graph_tensor
         
-        # Create training data directly from graph tensor
+        # Get node and edge features for reconstruction targets
         node_target_features = graph_tensor.node_sets['entities']['features']
+        edge_target_features = graph_tensor.edge_sets['contracts']['features']
+        
+        # Create dummy targets for embeddings (we focus on reconstruction loss)
         num_nodes = tf.shape(node_target_features)[0]
+        num_edges = tf.shape(edge_target_features)[0]
         dummy_node_embeddings = tf.zeros((num_nodes, self.output_dim))
+        dummy_edge_embeddings = tf.zeros((num_edges, self.output_dim))
         
-        # Create training targets dictionary
-        train_targets = {
-            'node_embeddings': dummy_node_embeddings,
-            'node_reconstructed': node_target_features
-        }
+        # Create training dataset
+        def data_generator():
+            yield (graph_tensor, {
+                'node_embeddings': dummy_node_embeddings,
+                'edge_embeddings': dummy_edge_embeddings,
+                'node_reconstructed': node_target_features,
+                'edge_reconstructed': edge_target_features
+            })
         
-        # Create validation data if provided
-        validation_data = None
+        dataset = tf.data.Dataset.from_generator(
+            data_generator,
+            output_signature=(
+                graph_tensor.spec,
+                {
+                    'node_embeddings': tf.TensorSpec(
+                        shape=(None, self.output_dim), dtype=tf.float32),
+                    'edge_embeddings': tf.TensorSpec(
+                        shape=(None, self.output_dim), dtype=tf.float32),
+                    'node_reconstructed': tf.TensorSpec(
+                        shape=(None, node_target_features.shape[1]), 
+                        dtype=tf.float32),
+                    'edge_reconstructed': tf.TensorSpec(
+                        shape=(None, edge_target_features.shape[1]), 
+                        dtype=tf.float32)
+                }
+            )
+        )
+        
+        # Repeat for multiple epochs
+        dataset = dataset.repeat()
+        
+        # Create validation dataset if provided
+        validation_dataset = None
         if validation_graph_tensor is not None:
-            val_node_target_features = (validation_graph_tensor.node_sets
-                                       ['entities']['features'])
+            # Get validation node and edge features for reconstruction targets
+            val_node_target_features = validation_graph_tensor.node_sets['entities']['features']
+            val_edge_target_features = validation_graph_tensor.edge_sets['contracts']['features']
+            
+            # Create dummy targets for validation embeddings
             val_num_nodes = tf.shape(val_node_target_features)[0]
+            val_num_edges = tf.shape(val_edge_target_features)[0]
             val_dummy_node_embeddings = tf.zeros((val_num_nodes, self.output_dim))
+            val_dummy_edge_embeddings = tf.zeros((val_num_edges, self.output_dim))
             
-            val_targets = {
-                'node_embeddings': val_dummy_node_embeddings,
-                'node_reconstructed': val_node_target_features
-            }
+            def val_data_generator():
+                yield (validation_graph_tensor, {
+                    'node_embeddings': val_dummy_node_embeddings,
+                    'edge_embeddings': val_dummy_edge_embeddings,
+                    'node_reconstructed': val_node_target_features,
+                    'edge_reconstructed': val_edge_target_features
+                })
             
-            # Create validation tuple
-            validation_data = (validation_graph_tensor, val_targets)
+            validation_dataset = tf.data.Dataset.from_generator(
+                val_data_generator,
+                output_signature=(
+                    validation_graph_tensor.spec,
+                    {
+                        'node_embeddings': tf.TensorSpec(
+                            shape=(None, self.output_dim), dtype=tf.float32),
+                        'edge_embeddings': tf.TensorSpec(
+                            shape=(None, self.output_dim), dtype=tf.float32),
+                        'node_reconstructed': tf.TensorSpec(
+                            shape=(None, val_node_target_features.shape[1]), 
+                            dtype=tf.float32),
+                        'edge_reconstructed': tf.TensorSpec(
+                            shape=(None, val_edge_target_features.shape[1]), 
+                            dtype=tf.float32)
+                    }
+                )
+            ).repeat()
         
         # Create learning rate schedule
         lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
@@ -800,148 +744,36 @@ class GNNAnomalyDetector:
             embedding_loss = tf.keras.losses.MeanSquaredError()
         
         # Compile model
-        self.node_model.compile(
+        self.model.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=lr_schedule),
             loss={
                 'node_embeddings': embedding_loss,
-                'node_reconstructed': reconstruction_loss
-            },
-            loss_weights={'node_embeddings': 0.1, 'node_reconstructed': 0.9}
-        )
-        
-        # Create batched dataset for training
-        train_dataset = tf.data.Dataset.from_tensors((graph_tensor, train_targets))
-        train_dataset = train_dataset.repeat()
-        
-        # Create batched validation dataset if provided
-        validation_dataset = None
-        if validation_data is not None:
-            validation_dataset = tf.data.Dataset.from_tensors(validation_data)
-            validation_dataset = validation_dataset.repeat()
-        
-        # Train using model.fit with properly batched data
-        history = self.node_model.fit(
-            train_dataset,
-            validation_data=validation_dataset,
-            steps_per_epoch=1,
-            validation_steps=1 if validation_dataset is not None else None,
-            epochs=epochs,
-            verbose=1
-        )
-        
-        # Save the trained model
-        data_dir = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            'data')
-        os.makedirs(data_dir, exist_ok=True)
-        model_path = os.path.join(data_dir, 'gnn_node_anomaly_model')
-        tf.saved_model.save(self.node_model, model_path)
-        logger.info(f"Node model saved to {model_path}")
-        
-        return history.history
-
-    def train_edge_model(self, graph_tensor: tfgnn.GraphTensor,
-                         validation_graph_tensor: tfgnn.GraphTensor = None,
-                         epochs: int = 50,
-                         use_huber_loss: bool = False) -> Dict:
-        """Train the edge anomaly detection model."""
-        logger.info(f"Training edge GNN model for {epochs} epochs...")
-        
-        if self.edge_model is None:
-            raise ValueError("Edge model must be built before training")
-        
-        self.graph_tensor_train = graph_tensor
-        
-        # Use provided validation graph or stored validation graph
-        if validation_graph_tensor is None:
-            validation_graph_tensor = self.graph_tensor_val
-            if validation_graph_tensor is None:
-                logger.warning("No validation data provided and no stored "
-                              "validation graph")
-        else:
-            self.graph_tensor_val = validation_graph_tensor
-        
-        # Create training data directly from graph tensor
-        edge_target_features = graph_tensor.edge_sets['contracts']['features']
-        num_edges = tf.shape(edge_target_features)[0]
-        dummy_edge_embeddings = tf.zeros((num_edges, self.output_dim))
-        
-        # Create training targets dictionary
-        train_targets = {
-            'edge_embeddings': dummy_edge_embeddings,
-            'edge_reconstructed': edge_target_features
-        }
-        
-        # Create validation data if provided
-        validation_data = None
-        if validation_graph_tensor is not None:
-            val_edge_target_features = (validation_graph_tensor.edge_sets
-                                       ['contracts']['features'])
-            val_num_edges = tf.shape(val_edge_target_features)[0]
-            val_dummy_edge_embeddings = tf.zeros((val_num_edges, self.output_dim))
-            
-            val_targets = {
-                'edge_embeddings': val_dummy_edge_embeddings,
-                'edge_reconstructed': val_edge_target_features
-            }
-            
-            # Create validation tuple
-            validation_data = (validation_graph_tensor, val_targets)
-        
-        # Create learning rate schedule
-        lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
-            initial_learning_rate=0.001,
-            decay_steps=epochs//3,
-            decay_rate=0.8,
-            staircase=True
-        )
-        
-        # Choose loss functions
-        if use_huber_loss:
-            reconstruction_loss = tf.keras.losses.Huber(delta=1.0)
-            embedding_loss = tf.keras.losses.MeanSquaredError()
-        else:
-            reconstruction_loss = tf.keras.losses.MeanSquaredError()
-            embedding_loss = tf.keras.losses.MeanSquaredError()
-        
-        # Compile model
-        self.edge_model.compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=lr_schedule),
-            loss={
                 'edge_embeddings': embedding_loss,
+                'node_reconstructed': reconstruction_loss,
                 'edge_reconstructed': reconstruction_loss
             },
-            loss_weights={'edge_embeddings': 0.1, 'edge_reconstructed': 0.9}
+            loss_weights={'node_embeddings': 0.05, 'edge_embeddings': 0.05,
+                         'node_reconstructed': 0.65, 'edge_reconstructed': 0.25}
         )
         
-        # Create batched dataset for training
-        train_dataset = tf.data.Dataset.from_tensors((graph_tensor, train_targets))
-        train_dataset = train_dataset.repeat()
-        
-        # Create batched validation dataset if provided
-        validation_dataset = None
-        if validation_data is not None:
-            validation_dataset = tf.data.Dataset.from_tensors(validation_data)
-            validation_dataset = validation_dataset.repeat()
-        
-        # Train using model.fit with properly batched data
-        history = self.edge_model.fit(
-            train_dataset,
+        # Train using model.fit with validation data
+        history = self.model.fit(
+            dataset,
             validation_data=validation_dataset,
-            steps_per_epoch=1,
+            steps_per_epoch=1,  # One step per epoch since we have one graph
             validation_steps=1 if validation_dataset is not None else None,
             epochs=epochs,
             verbose=1
         )
         
-        # Save the trained model
+        # Save the trained model to the data folder using SavedModel format
         data_dir = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             'data')
         os.makedirs(data_dir, exist_ok=True)
-        model_path = os.path.join(data_dir, 'gnn_edge_anomaly_model')
-        tf.saved_model.save(self.edge_model, model_path)
-        logger.info(f"Edge model saved to {model_path}")
+        model_path = os.path.join(data_dir, 'gnn_anomaly_model')
+        tf.saved_model.save(self.model, model_path)
+        logger.info(f"Model saved to {model_path}")
         
         return history.history
     
@@ -949,18 +781,18 @@ class GNNAnomalyDetector:
     
 
     
-    def plot_node_training_history(self, history: Dict, save_path: str = None):
-        """Plot node model training and validation losses over epochs.
+    def plot_training_history(self, history: Dict, save_path: str = None):
+        """Plot training and validation losses over epochs.
         
         Args:
-            history: Node training history dictionary from model.fit()
+            history: Training history dictionary from model.fit()
             save_path: Optional path to save the plot
         """
         import matplotlib.pyplot as plt
         
         # Create figure with subplots
         fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-        fig.suptitle('Node Model Training and Validation Losses', fontsize=16)
+        fig.suptitle('Training and Validation Losses', fontsize=16)
         
         epochs = range(1, len(history['loss']) + 1)
         
@@ -976,271 +808,11 @@ class GNNAnomalyDetector:
         axes[0, 0].legend()
         axes[0, 0].grid(True, alpha=0.3)
         
-        # Plot 2: Node Embeddings Loss
-        if 'node_embeddings_loss' in history:
-            axes[0, 1].plot(epochs, history['node_embeddings_loss'], 
-                           'b-', label='Training', linewidth=2)
-            if 'val_node_embeddings_loss' in history:
-                axes[0, 1].plot(epochs, history['val_node_embeddings_loss'], 
-                               'r-', label='Validation', linewidth=2)
-            axes[0, 1].set_title('Node Embeddings Loss')
-            axes[0, 1].set_xlabel('Epoch')
-            axes[0, 1].set_ylabel('Loss')
-            axes[0, 1].legend()
-            axes[0, 1].grid(True, alpha=0.3)
-        else:
-            axes[0, 1].text(0.5, 0.5, 'Node Embeddings Loss\nNot Available', 
-                           ha='center', va='center', 
-                           transform=axes[0, 1].transAxes)
-            axes[0, 1].set_title('Node Embeddings Loss')
-        
-        # Plot 3: Total Weighted Loss
-        axes[1, 0].plot(epochs, history['loss'], 
-                       'b-', label='Training', linewidth=2)
-        if 'val_loss' in history:
-            axes[1, 0].plot(epochs, history['val_loss'], 
-                           'r-', label='Validation', linewidth=2)
-        axes[1, 0].set_title('Total Weighted Loss')
-        axes[1, 0].set_xlabel('Epoch')
-        axes[1, 0].set_ylabel('Loss')
-        axes[1, 0].legend()
-        axes[1, 0].grid(True, alpha=0.3)
-        
-        # Plot 4: Loss Comparison (All node losses on one plot)
-        axes[1, 1].plot(epochs, history['node_reconstructed_loss'], 
-                       'b-', label='Node Recon (Train)', linewidth=2)
-        if 'node_embeddings_loss' in history:
-            axes[1, 1].plot(epochs, history['node_embeddings_loss'], 
-                           'g-', label='Node Embed (Train)', alpha=0.7)
-        axes[1, 1].plot(epochs, history['loss'], 
-                       'k-', label='Total (Train)', linewidth=2)
-        
-        if 'val_node_reconstructed_loss' in history:
-            axes[1, 1].plot(epochs, history['val_node_reconstructed_loss'], 
-                           'b--', label='Node Recon (Val)', linewidth=2)
-        if 'val_node_embeddings_loss' in history:
-            axes[1, 1].plot(epochs, history['val_node_embeddings_loss'], 
-                           'g--', label='Node Embed (Val)', alpha=0.7)
-        if 'val_loss' in history:
-            axes[1, 1].plot(epochs, history['val_loss'], 
-                           'k--', label='Total (Val)', linewidth=2)
-        
-        axes[1, 1].set_title('All Node Losses Comparison')
-        axes[1, 1].set_xlabel('Epoch')
-        axes[1, 1].set_ylabel('Loss')
-        axes[1, 1].legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-        axes[1, 1].grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        
-        # Save plot if path provided
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            logger.info(f"Node training history plot saved to {save_path}")
-        
-        plt.show()
-        
-        # Print final loss values
-        print("\n" + "="*50)
-        print("NODE MODEL - FINAL LOSS VALUES")
-        print("="*50)
-        print("Training Losses (Final Epoch):")
-        print(f"  - Node Reconstruction: "
-              f"{history['node_reconstructed_loss'][-1]:.6f}")
-        if 'node_embeddings_loss' in history:
-            print(f"  - Node Embeddings: "
-                  f"{history['node_embeddings_loss'][-1]:.6f}")
-        print(f"  - Total Weighted Loss: {history['loss'][-1]:.6f}")
-        
-        if 'val_loss' in history:
-            print("\nValidation Losses (Final Epoch):")
-            print(f"  - Node Reconstruction: "
-                  f"{history['val_node_reconstructed_loss'][-1]:.6f}")
-            if 'val_node_embeddings_loss' in history:
-                print(f"  - Node Embeddings: "
-                      f"{history['val_node_embeddings_loss'][-1]:.6f}")
-            print(f"  - Total Weighted Loss: {history['val_loss'][-1]:.6f}")
-            
-            # Calculate improvement/overfitting indicators
-            train_val_diff = history['loss'][-1] - history['val_loss'][-1]
-            print("\nTraining vs Validation Analysis:")
-            if train_val_diff > 0.01:
-                print("  - ⚠️  Training loss >> Validation loss")
-                print("      Likely causes: Dropout/regularization effects")
-                print("      This is NOT overfitting - model performs better "
-                      "on validation!")
-            elif train_val_diff < -0.01:
-                print("  - ⚠️  Potential overfitting (val loss >> train loss)")
-                print("      Model memorizing training data, poor "
-                      "generalization")
-            else:
-                print("  - ✅ Good generalization (train ≈ val loss)")
-
-    def plot_edge_training_history(self, history: Dict, save_path: str = None):
-        """Plot edge model training and validation losses over epochs.
-        
-        Args:
-            history: Edge training history dictionary from model.fit()
-            save_path: Optional path to save the plot
-        """
-        import matplotlib.pyplot as plt
-        
-        # Create figure with subplots
-        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-        fig.suptitle('Edge Model Training and Validation Losses', fontsize=16)
-        
-        epochs = range(1, len(history['loss']) + 1)
-        
-        # Plot 1: Edge Reconstruction Loss
-        axes[0, 0].plot(epochs, history['edge_reconstructed_loss'], 
-                       'b-', label='Training', linewidth=2)
-        if 'val_edge_reconstructed_loss' in history:
-            axes[0, 0].plot(epochs, history['val_edge_reconstructed_loss'], 
-                           'r-', label='Validation', linewidth=2)
-        axes[0, 0].set_title('Edge Reconstruction Loss')
-        axes[0, 0].set_xlabel('Epoch')
-        axes[0, 0].set_ylabel('Loss')
-        axes[0, 0].legend()
-        axes[0, 0].grid(True, alpha=0.3)
-        
-        # Plot 2: Edge Embeddings Loss
-        if 'edge_embeddings_loss' in history:
-            axes[0, 1].plot(epochs, history['edge_embeddings_loss'], 
-                           'b-', label='Training', linewidth=2)
-            if 'val_edge_embeddings_loss' in history:
-                axes[0, 1].plot(epochs, history['val_edge_embeddings_loss'], 
-                               'r-', label='Validation', linewidth=2)
-            axes[0, 1].set_title('Edge Embeddings Loss')
-            axes[0, 1].set_xlabel('Epoch')
-            axes[0, 1].set_ylabel('Loss')
-            axes[0, 1].legend()
-            axes[0, 1].grid(True, alpha=0.3)
-        else:
-            axes[0, 1].text(0.5, 0.5, 'Edge Embeddings Loss\nNot Available', 
-                           ha='center', va='center', 
-                           transform=axes[0, 1].transAxes)
-            axes[0, 1].set_title('Edge Embeddings Loss')
-        
-        # Plot 3: Total Weighted Loss
-        axes[1, 0].plot(epochs, history['loss'], 
-                       'b-', label='Training', linewidth=2)
-        if 'val_loss' in history:
-            axes[1, 0].plot(epochs, history['val_loss'], 
-                           'r-', label='Validation', linewidth=2)
-        axes[1, 0].set_title('Total Weighted Loss')
-        axes[1, 0].set_xlabel('Epoch')
-        axes[1, 0].set_ylabel('Loss')
-        axes[1, 0].legend()
-        axes[1, 0].grid(True, alpha=0.3)
-        
-        # Plot 4: Loss Comparison (All edge losses on one plot)
-        axes[1, 1].plot(epochs, history['edge_reconstructed_loss'], 
-                       'b-', label='Edge Recon (Train)', linewidth=2)
-        if 'edge_embeddings_loss' in history:
-            axes[1, 1].plot(epochs, history['edge_embeddings_loss'], 
-                           'g-', label='Edge Embed (Train)', alpha=0.7)
-        axes[1, 1].plot(epochs, history['loss'], 
-                       'k-', label='Total (Train)', linewidth=2)
-        
-        if 'val_edge_reconstructed_loss' in history:
-            axes[1, 1].plot(epochs, history['val_edge_reconstructed_loss'], 
-                           'b--', label='Edge Recon (Val)', linewidth=2)
-        if 'val_edge_embeddings_loss' in history:
-            axes[1, 1].plot(epochs, history['val_edge_embeddings_loss'], 
-                           'g--', label='Edge Embed (Val)', alpha=0.7)
-        if 'val_loss' in history:
-            axes[1, 1].plot(epochs, history['val_loss'], 
-                           'k--', label='Total (Val)', linewidth=2)
-        
-        axes[1, 1].set_title('All Edge Losses Comparison')
-        axes[1, 1].set_xlabel('Epoch')
-        axes[1, 1].set_ylabel('Loss')
-        axes[1, 1].legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-        axes[1, 1].grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        
-        # Save plot if path provided
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            logger.info(f"Edge training history plot saved to {save_path}")
-        
-        plt.show()
-        
-        # Print final loss values
-        print("\n" + "="*50)
-        print("EDGE MODEL - FINAL LOSS VALUES")
-        print("="*50)
-        print("Training Losses (Final Epoch):")
-        print(f"  - Edge Reconstruction: "
-              f"{history['edge_reconstructed_loss'][-1]:.6f}")
-        if 'edge_embeddings_loss' in history:
-            print(f"  - Edge Embeddings: "
-                  f"{history['edge_embeddings_loss'][-1]:.6f}")
-        print(f"  - Total Weighted Loss: {history['loss'][-1]:.6f}")
-        
-        if 'val_loss' in history:
-            print("\nValidation Losses (Final Epoch):")
-            print(f"  - Edge Reconstruction: "
-                  f"{history['val_edge_reconstructed_loss'][-1]:.6f}")
-            if 'val_edge_embeddings_loss' in history:
-                print(f"  - Edge Embeddings: "
-                      f"{history['val_edge_embeddings_loss'][-1]:.6f}")
-            print(f"  - Total Weighted Loss: {history['val_loss'][-1]:.6f}")
-            
-            # Calculate improvement/overfitting indicators
-            train_val_diff = history['loss'][-1] - history['val_loss'][-1]
-            print("\nTraining vs Validation Analysis:")
-            if train_val_diff > 0.01:
-                print("  - ⚠️  Training loss >> Validation loss")
-                print("      Likely causes: Dropout/regularization effects")
-                print("      This is NOT overfitting - model performs better "
-                      "on validation!")
-            elif train_val_diff < -0.01:
-                print("  - ⚠️  Potential overfitting (val loss >> train loss)")
-                print("      Model memorizing training data, poor "
-                      "generalization")
-            else:
-                print("  - ✅ Good generalization (train ≈ val loss)")
-
-    def plot_combined_training_history(self, node_history: Dict, 
-                                      edge_history: Dict, 
-                                      save_path: str = None):
-        """Plot both node and edge model training histories for comparison.
-        
-        Args:
-            node_history: Node training history dictionary
-            edge_history: Edge training history dictionary
-            save_path: Optional path to save the plot
-        """
-        import matplotlib.pyplot as plt
-        
-        # Create figure with subplots
-        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-        fig.suptitle('Node and Edge Models Training Comparison', fontsize=16)
-        
-        node_epochs = range(1, len(node_history['loss']) + 1)
-        edge_epochs = range(1, len(edge_history['loss']) + 1)
-        
-        # Plot 1: Node Reconstruction Loss
-        axes[0, 0].plot(node_epochs, node_history['node_reconstructed_loss'], 
-                       'b-', label='Training', linewidth=2)
-        if 'val_node_reconstructed_loss' in node_history:
-            axes[0, 0].plot(node_epochs, 
-                           node_history['val_node_reconstructed_loss'], 
-                           'r-', label='Validation', linewidth=2)
-        axes[0, 0].set_title('Node Reconstruction Loss')
-        axes[0, 0].set_xlabel('Epoch')
-        axes[0, 0].set_ylabel('Loss')
-        axes[0, 0].legend()
-        axes[0, 0].grid(True, alpha=0.3)
-        
         # Plot 2: Edge Reconstruction Loss
-        axes[0, 1].plot(edge_epochs, edge_history['edge_reconstructed_loss'], 
+        axes[0, 1].plot(epochs, history['edge_reconstructed_loss'], 
                        'b-', label='Training', linewidth=2)
-        if 'val_edge_reconstructed_loss' in edge_history:
-            axes[0, 1].plot(edge_epochs, 
-                           edge_history['val_edge_reconstructed_loss'], 
+        if 'val_edge_reconstructed_loss' in history:
+            axes[0, 1].plot(epochs, history['val_edge_reconstructed_loss'], 
                            'r-', label='Validation', linewidth=2)
         axes[0, 1].set_title('Edge Reconstruction Loss')
         axes[0, 1].set_xlabel('Epoch')
@@ -1248,134 +820,98 @@ class GNNAnomalyDetector:
         axes[0, 1].legend()
         axes[0, 1].grid(True, alpha=0.3)
         
-        # Plot 3: Total Losses Comparison
-        axes[0, 2].plot(node_epochs, node_history['loss'], 
-                       'b-', label='Node Model', linewidth=2)
-        axes[0, 2].plot(edge_epochs, edge_history['loss'], 
-                       'r-', label='Edge Model', linewidth=2)
-        if 'val_loss' in node_history:
-            axes[0, 2].plot(node_epochs, node_history['val_loss'], 
-                           'b--', label='Node Model (Val)', linewidth=2)
-        if 'val_loss' in edge_history:
-            axes[0, 2].plot(edge_epochs, edge_history['val_loss'], 
-                           'r--', label='Edge Model (Val)', linewidth=2)
-        axes[0, 2].set_title('Total Weighted Loss Comparison')
-        axes[0, 2].set_xlabel('Epoch')
-        axes[0, 2].set_ylabel('Loss')
-        axes[0, 2].legend()
-        axes[0, 2].grid(True, alpha=0.3)
-        
-        # Plot 4: Node Model All Losses
-        axes[1, 0].plot(node_epochs, node_history['node_reconstructed_loss'], 
-                       'b-', label='Reconstruction', linewidth=2)
-        if 'node_embeddings_loss' in node_history:
-            axes[1, 0].plot(node_epochs, node_history['node_embeddings_loss'], 
-                           'g-', label='Embeddings', alpha=0.7)
-        axes[1, 0].plot(node_epochs, node_history['loss'], 
-                       'k-', label='Total', linewidth=2)
-        axes[1, 0].set_title('Node Model - All Losses')
+        # Plot 3: Total Weighted Loss
+        axes[1, 0].plot(epochs, history['loss'], 
+                       'b-', label='Training', linewidth=2)
+        if 'val_loss' in history:
+            axes[1, 0].plot(epochs, history['val_loss'], 
+                           'r-', label='Validation', linewidth=2)
+        axes[1, 0].set_title('Total Weighted Loss')
         axes[1, 0].set_xlabel('Epoch')
         axes[1, 0].set_ylabel('Loss')
         axes[1, 0].legend()
         axes[1, 0].grid(True, alpha=0.3)
         
-        # Plot 5: Edge Model All Losses
-        axes[1, 1].plot(edge_epochs, edge_history['edge_reconstructed_loss'], 
-                       'b-', label='Reconstruction', linewidth=2)
-        if 'edge_embeddings_loss' in edge_history:
-            axes[1, 1].plot(edge_epochs, edge_history['edge_embeddings_loss'], 
-                           'g-', label='Embeddings', alpha=0.7)
-        axes[1, 1].plot(edge_epochs, edge_history['loss'], 
-                       'k-', label='Total', linewidth=2)
-        axes[1, 1].set_title('Edge Model - All Losses')
+        # Plot 4: Loss Comparison (All losses on one plot)
+        axes[1, 1].plot(epochs, history['node_reconstructed_loss'], 
+                       'b-', label='Node Recon (Train)', alpha=0.7)
+        axes[1, 1].plot(epochs, history['edge_reconstructed_loss'], 
+                       'g-', label='Edge Recon (Train)', alpha=0.7)
+        axes[1, 1].plot(epochs, history['loss'], 
+                       'k-', label='Total (Train)', linewidth=2)
+        
+        if 'val_node_reconstructed_loss' in history:
+            axes[1, 1].plot(epochs, history['val_node_reconstructed_loss'], 
+                           'b--', label='Node Recon (Val)', alpha=0.7)
+        if 'val_edge_reconstructed_loss' in history:
+            axes[1, 1].plot(epochs, history['val_edge_reconstructed_loss'], 
+                           'g--', label='Edge Recon (Val)', alpha=0.7)
+        if 'val_loss' in history:
+            axes[1, 1].plot(epochs, history['val_loss'], 
+                           'k--', label='Total (Val)', linewidth=2)
+        
+        axes[1, 1].set_title('All Losses Comparison')
         axes[1, 1].set_xlabel('Epoch')
         axes[1, 1].set_ylabel('Loss')
-        axes[1, 1].legend()
+        axes[1, 1].legend(bbox_to_anchor=(1.05, 1), loc='upper left')
         axes[1, 1].grid(True, alpha=0.3)
-        
-        # Plot 6: Final Performance Comparison (Bar Chart)
-        categories = ['Node\nReconstruction', 'Edge\nReconstruction', 
-                     'Node\nTotal', 'Edge\nTotal']
-        train_values = [
-            node_history['node_reconstructed_loss'][-1],
-            edge_history['edge_reconstructed_loss'][-1],
-            node_history['loss'][-1],
-            edge_history['loss'][-1]
-        ]
-        
-        x_pos = range(len(categories))
-        bars = axes[1, 2].bar(x_pos, train_values, alpha=0.7, 
-                             color=['skyblue', 'lightcoral', 'lightgreen', 
-                                   'orange'])
-        axes[1, 2].set_title('Final Training Loss Comparison')
-        axes[1, 2].set_ylabel('Loss')
-        axes[1, 2].set_xticks(x_pos)
-        axes[1, 2].set_xticklabels(categories)
-        axes[1, 2].grid(True, alpha=0.3, axis='y')
-        
-        # Add value labels on bars
-        for bar, value in zip(bars, train_values):
-            axes[1, 2].text(bar.get_x() + bar.get_width()/2, 
-                           bar.get_height(),
-                           f'{value:.4f}', ha='center', va='bottom')
         
         plt.tight_layout()
         
         # Save plot if path provided
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            logger.info(f"Combined training history plot saved to {save_path}")
+            logger.info(f"Training history plot saved to {save_path}")
         
         plt.show()
         
-        # Print comparison summary
-        print("\n" + "="*60)
-        print("MODELS COMPARISON - FINAL LOSS VALUES")
-        print("="*60)
-        print("Node Model Final Losses:")
-        print(f"  - Reconstruction: "
-              f"{node_history['node_reconstructed_loss'][-1]:.6f}")
-        print(f"  - Total: {node_history['loss'][-1]:.6f}")
+        # Print final loss values
+        print("\n" + "="*50)
+        print("FINAL LOSS VALUES")
+        print("="*50)
+        print(f"Training Losses (Final Epoch):")
+        print(f"  - Node Reconstruction: {history['node_reconstructed_loss'][-1]:.6f}")
+        print(f"  - Edge Reconstruction: {history['edge_reconstructed_loss'][-1]:.6f}")
+        print(f"  - Total Weighted Loss: {history['loss'][-1]:.6f}")
         
-        print("\nEdge Model Final Losses:")
-        print(f"  - Reconstruction: "
-              f"{edge_history['edge_reconstructed_loss'][-1]:.6f}")
-        print(f"  - Total: {edge_history['loss'][-1]:.6f}")
-        
-        # Determine which model performed better
-        node_final = node_history['loss'][-1]
-        edge_final = edge_history['loss'][-1]
-        
-        print("\nModel Performance Comparison:")
-        if node_final < edge_final:
-            diff = ((edge_final - node_final) / edge_final) * 100
-            print(f"  - 🏆 Node model performed better "
-                  f"({diff:.1f}% lower loss)")
-        elif edge_final < node_final:
-            diff = ((node_final - edge_final) / node_final) * 100
-            print(f"  - 🏆 Edge model performed better "
-                  f"({diff:.1f}% lower loss)")
-        else:
-            print("  - 🤝 Both models achieved similar performance")
+        if 'val_loss' in history:
+            print(f"\nValidation Losses (Final Epoch):")
+            print(f"  - Node Reconstruction: {history['val_node_reconstructed_loss'][-1]:.6f}")
+            print(f"  - Edge Reconstruction: {history['val_edge_reconstructed_loss'][-1]:.6f}")
+            print(f"  - Total Weighted Loss: {history['val_loss'][-1]:.6f}")
+            
+            # Calculate improvement/overfitting indicators
+            train_val_diff = history['loss'][-1] - history['val_loss'][-1]
+            print(f"\nTraining vs Validation Analysis:")
+            print(f"  - Train-Val Loss Difference: {train_val_diff:.6f}")
+            if train_val_diff > 0.01:
+                print("  - ⚠️  Training loss >> Validation loss")
+                print("      Likely causes: Dropout/regularization effects, data differences")
+                print("      This is NOT overfitting - model performs better on validation!")
+            elif train_val_diff < -0.01:
+                print("  - ⚠️  Potential overfitting (val loss >> train loss)")
+                print("      Model memorizing training data, poor generalization")
+            else:
+                print("  - ✅ Good generalization (train ≈ val loss)")
 
 
 
-    def detect_node_anomalies(self, graph_tensor: tfgnn.GraphTensor = None,
-                              threshold_percentile: float = 99
-                              ) -> Tuple[np.ndarray, float]:
-        """Detect node anomalies based on reconstruction error."""
-        logger.info("Detecting node anomalies...")
+    def detect_anomalies(self, graph_tensor: tfgnn.GraphTensor = None,
+                         threshold_percentile: float = 99
+                         ) -> Tuple[np.ndarray, np.ndarray, float, float]:
+        """Detect anomalies based on reconstruction error."""
+        logger.info("Detecting node and edge anomalies...")
         
-        if self.node_model is None:
-            raise ValueError("Node model must be trained before detecting "
+        if self.model is None:
+            raise ValueError("Model must be trained before detecting "
                              "anomalies")
         
         # Use provided graph_tensor or default to test tensor
         if graph_tensor is None:
             if self.graph_tensor_test is None:
-                raise ValueError("No graph tensor provided and no test "
-                               "tensor available")
+                raise ValueError("No graph tensor provided and no test tensor available")
             graph_tensor = self.graph_tensor_test
+            print('graph_tensor is self.graph_tensor_test')
         
         # Get predictions by creating a dataset and batching properly
         def data_generator():
@@ -1387,72 +923,36 @@ class GNNAnomalyDetector:
         )
         dataset = dataset.batch(1)
         
-        predictions = self.node_model.predict(dataset)
+        predictions = self.model.predict(dataset)
         node_reconstructed = predictions['node_reconstructed']
-        
-        # Calculate reconstruction errors
-        original_node_features = (graph_tensor.node_sets['entities']
-                                ['features'].numpy())
-        
-        node_reconstruction_error = np.mean((original_node_features - 
-                                           node_reconstructed) ** 2, axis=1)
-        
-        # Determine thresholds and anomalies
-        node_threshold = np.percentile(node_reconstruction_error, 
-                                     threshold_percentile)
-        node_anomalies = node_reconstruction_error > node_threshold
-        
-        logger.info(f"Detected {np.sum(node_anomalies)} node anomalies "
-                   f"({np.sum(node_anomalies)/len(node_anomalies)*100:.1f}%)")
-        
-        return node_reconstruction_error, node_threshold
-
-    def detect_edge_anomalies(self, graph_tensor: tfgnn.GraphTensor = None,
-                              threshold_percentile: float = 99
-                              ) -> Tuple[np.ndarray, float]:
-        """Detect edge anomalies based on reconstruction error."""
-        logger.info("Detecting edge anomalies...")
-        
-        if self.edge_model is None:
-            raise ValueError("Edge model must be trained before detecting "
-                             "anomalies")
-        
-        # Use provided graph_tensor or default to test tensor
-        if graph_tensor is None:
-            if self.graph_tensor_test is None:
-                raise ValueError("No graph tensor provided and no test "
-                               "tensor available")
-            graph_tensor = self.graph_tensor_test
-        
-        # Get predictions by creating a dataset and batching properly
-        def data_generator():
-            yield graph_tensor
-        
-        dataset = tf.data.Dataset.from_generator(
-            data_generator,
-            output_signature=graph_tensor.spec
-        )
-        dataset = dataset.batch(1)
-        
-        predictions = self.edge_model.predict(dataset)
         edge_reconstructed = predictions['edge_reconstructed']
         
         # Calculate reconstruction errors
+        original_node_features = (graph_tensor.node_sets['entities']
+                              ['features'].numpy())
         original_edge_features = (graph_tensor.edge_sets['contracts']
-                                ['features'].numpy())
+                              ['features'].numpy())
         
+        node_reconstruction_error = np.mean((original_node_features - 
+                                           node_reconstructed) ** 2, axis=1)
         edge_reconstruction_error = np.mean((original_edge_features - 
                                            edge_reconstructed) ** 2, axis=1)
         
         # Determine thresholds and anomalies
+        node_threshold = np.percentile(node_reconstruction_error, 
+                                      threshold_percentile)
         edge_threshold = np.percentile(edge_reconstruction_error, 
-                                     threshold_percentile)
+                                      threshold_percentile)
+        node_anomalies = node_reconstruction_error > node_threshold
         edge_anomalies = edge_reconstruction_error > edge_threshold
         
+        logger.info(f"Detected {np.sum(node_anomalies)} node anomalies "
+                    f"({np.sum(node_anomalies)/len(node_anomalies)*100:.1f}%)")
         logger.info(f"Detected {np.sum(edge_anomalies)} edge anomalies "
-                   f"({np.sum(edge_anomalies)/len(edge_anomalies)*100:.1f}%)")
+                    f"({np.sum(edge_anomalies)/len(edge_anomalies)*100:.1f}%)")
         
-        return edge_reconstruction_error, edge_threshold
+        return (node_reconstruction_error, edge_reconstruction_error, 
+                node_threshold, edge_threshold)
 
 
 class AnomalyAnalyzer:
@@ -1827,59 +1327,35 @@ def main():
         test_graph_tensor = gnn_detector.create_tensorflow_graph(
             test_graph_data, test_node_features_scaled, test_edge_features_scaled)
         
-        # Build both models
-        gnn_detector.node_model = gnn_detector.build_node_model(
-            train_node_features_scaled.shape[1], 
-            train_edge_features_scaled.shape[1])
-        gnn_detector.edge_model = gnn_detector.build_edge_model(
-            train_node_features_scaled.shape[1], 
-            train_edge_features_scaled.shape[1])
+        # Build model
+        gnn_detector.model = gnn_detector.build_model(
+            train_node_features_scaled.shape[1], train_edge_features_scaled.shape[1])
         
-        # Train both models with validation data
-        node_history = gnn_detector.train_node_model(
-            train_graph_tensor, 
-            validation_graph_tensor=test_graph_tensor,
-            epochs=50)
-        edge_history = gnn_detector.train_edge_model(
-            train_graph_tensor, 
-            validation_graph_tensor=test_graph_tensor,
-            epochs=50)
+        # Train model with validation data
+        history = gnn_detector.train(train_graph_tensor, 
+                                   validation_graph_tensor=test_graph_tensor,
+                                   epochs=50)
         
-        # Plot training histories
-        node_plot_save_path = os.path.join(
+        # Plot training history
+        plot_save_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            'data', 'node_training_history.png')
-        edge_plot_save_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            'data', 'edge_training_history.png')
+            'data', 'training_history.png')
+        gnn_detector.plot_training_history(history, save_path=plot_save_path)
         
-        # Note: We'll need to update plot_training_history for single model
-        # For now, we'll skip the plotting and just log the results
-        logger.info("Node training completed. Final losses:")
-        logger.info(f"Node reconstruction loss: "
-                   f"{node_history['node_reconstructed_loss'][-1]:.4f}")
-        logger.info("Edge training completed. Final losses:")
-        logger.info(f"Edge reconstruction loss: "
-                   f"{edge_history['edge_reconstructed_loss'][-1]:.4f}")
-        
-        # Store graph tensor for testing
+        # Store both graph tensors
         gnn_detector.graph_tensor_test = test_graph_tensor
         
-        # Detect anomalies on TEST data using both models
-        node_reconstruction_error, node_threshold = (
-            gnn_detector.detect_node_anomalies())
-        edge_reconstruction_error, edge_threshold = (
-            gnn_detector.detect_edge_anomalies())
+        # Detect anomalies on TEST data
+        (node_reconstruction_error, edge_reconstruction_error, 
+         node_threshold, edge_threshold) = gnn_detector.detect_anomalies()
         
         # Calculate anomaly masks
         node_anomalies = node_reconstruction_error > node_threshold
         edge_anomalies = edge_reconstruction_error > edge_threshold
         
         # OPTIONAL: Also evaluate on training data for comparison
-        logger.info("Evaluating models on training data for comparison...")
-        train_node_error, _ = gnn_detector.detect_node_anomalies(
-            graph_tensor=train_graph_tensor, threshold_percentile=95)
-        train_edge_error, _ = gnn_detector.detect_edge_anomalies(
+        logger.info("Evaluating model on training data for comparison...")
+        (train_node_error, train_edge_error, _, _) = gnn_detector.detect_anomalies(
             graph_tensor=train_graph_tensor, threshold_percentile=95)
         train_node_anomalies = train_node_error > node_threshold
         train_edge_anomalies = train_edge_error > edge_threshold
@@ -1890,12 +1366,9 @@ def main():
               f"({np.sum(train_edge_anomalies)/len(train_edge_anomalies)*100:.1f}%)")
         
         # Get embeddings for analysis from TEST data
-        node_predictions = gnn_detector.node_model.predict(
-            gnn_detector.graph_tensor_test)
-        edge_predictions = gnn_detector.edge_model.predict(
-            gnn_detector.graph_tensor_test)
-        node_embeddings = node_predictions['node_embeddings']
-        edge_embeddings = edge_predictions['edge_embeddings']
+        predictions = gnn_detector.model.predict(gnn_detector.graph_tensor_test)
+        node_embeddings = predictions['node_embeddings']
+        edge_embeddings = predictions['edge_embeddings']
         
         # Create results DataFrames using TEST data
         results_df = analyzer.create_results_dataframe(
@@ -1914,15 +1387,10 @@ def main():
                              node_threshold, edge_threshold)
         
         # Save results
-        gnn_detector.node_model.save(os.path.join(MODEL_PATH, 
-                                                 'gnn_node_anomaly_model'))
-        gnn_detector.edge_model.save(os.path.join(MODEL_PATH, 
-                                                 'gnn_edge_anomaly_model'))
-        results_df.to_csv(os.path.join(MODEL_PATH, 
-                                      'gnn_node_anomaly_results.csv'),
+        gnn_detector.model.save(os.path.join(MODEL_PATH, 'gnn_anomaly_model'))
+        results_df.to_csv(os.path.join(MODEL_PATH, 'gnn_node_anomaly_results.csv'),
                          index=False)
-        edge_results_df.to_csv(os.path.join(MODEL_PATH, 
-                                           'gnn_edge_anomaly_results.csv'),
+        edge_results_df.to_csv(os.path.join(MODEL_PATH, 'gnn_edge_anomaly_results.csv'),
                               index=False)
         np.save(os.path.join(MODEL_PATH, 'gnn_node_embeddings.npy'),
                node_embeddings)
@@ -1958,9 +1426,9 @@ def main():
         print(f"- Anomalous suppliers: {len(anomalous_suppliers)}")
         print(f"\nModel performance:")
         print(f"- Final node reconstruction loss: "
-              f"{node_history['node_reconstructed_loss'][-1]:.4f}")
+              f"{history['node_reconstructed_loss'][-1]:.4f}")
         print(f"- Final edge reconstruction loss: "
-              f"{edge_history['edge_reconstructed_loss'][-1]:.4f}")
+              f"{history['edge_reconstructed_loss'][-1]:.4f}")
         print(f"- Node anomaly threshold: {node_threshold:.4f}")
         print(f"- Edge anomaly threshold: {edge_threshold:.4f}")
         
@@ -2198,15 +1666,12 @@ train_edge_features_scaled = graph_builder.edge_scaler.fit_transform(train_edge_
 train_graph_tensor = gnn_detector.create_tensorflow_graph(
     train_graph_data, train_node_features_scaled, train_edge_features_scaled)
 
-# 6. Build both models
-gnn_detector.node_model = gnn_detector.build_node_model(
-    train_node_features_scaled.shape[1], train_edge_features_scaled.shape[1])
-gnn_detector.edge_model = gnn_detector.build_edge_model(
+# 6. Build and train model
+gnn_detector.model = gnn_detector.build_model(
     train_node_features_scaled.shape[1], train_edge_features_scaled.shape[1])
 
-# 7. Train both models
-node_history = gnn_detector.train_node_model(train_graph_tensor, epochs=50)
-edge_history = gnn_detector.train_edge_model(train_graph_tensor, epochs=50)
+# 7. Train
+history = gnn_detector.train(train_graph_tensor, epochs=50)
 
 # 8. Create test graph
 test_graph_data = graph_builder.create_graph(X_test_preproc, X_test, type='test')
@@ -2216,13 +1681,11 @@ test_graph_tensor = gnn_detector.create_tensorflow_graph(
     test_graph_data, test_node_features_scaled, test_edge_features_scaled)
 gnn_detector.graph_tensor_test = test_graph_tensor
 
-# 9. Detect anomalies on test data using both models
-node_reconstruction_error, node_threshold = gnn_detector.detect_node_anomalies()
-edge_reconstruction_error, edge_threshold = gnn_detector.detect_edge_anomalies()
+# 9. Detect anomalies on test data
+(node_reconstruction_error, edge_reconstruction_error, 
+ node_threshold, edge_threshold) = gnn_detector.detect_anomalies()
 
 # 10. Optionally detect anomalies on training data for comparison
-train_node_error, _ = gnn_detector.detect_node_anomalies(
-    graph_tensor=train_graph_tensor, threshold_percentile=95)
-train_edge_error, _ = gnn_detector.detect_edge_anomalies(
+(train_node_error, train_edge_error, _, _) = gnn_detector.detect_anomalies(
     graph_tensor=train_graph_tensor, threshold_percentile=95)
 """ 

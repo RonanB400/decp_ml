@@ -1,8 +1,8 @@
 """
-Synthetic Anomaly Generator for Public Procurement Data
+Synthetic Anomaly Generator for Public Procurement Data (Version 2)
 
-This module creates synthetic anomalies in procurement datasets to test
-the effectiveness of anomaly detection models, particularly GNN-based approaches.
+This module creates synthetic anomalies by adding new rows to procurement 
+datasets to test the effectiveness of anomaly detection models.
 
 The anomalies are based on red flags identified in procurement literature
 and real-world corruption patterns.
@@ -14,10 +14,9 @@ Date: January 2025
 import pandas as pd
 import numpy as np
 import logging
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List
 from datetime import datetime, timedelta
 import random
-from collections import defaultdict
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -25,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 class SyntheticAnomalyGenerator:
-    """Generate synthetic anomalies in procurement data for testing detection models."""
+    """Generate synthetic anomalies by adding new rows to procurement data."""
     
     def __init__(self, random_seed: int = 42):
         """Initialize the anomaly generator.
@@ -40,33 +39,33 @@ class SyntheticAnomalyGenerator:
         # Track which rows have been modified for each anomaly type
         self.anomaly_labels = {}
         
-    def generate_anomalies(self, 
+    def generate_anomalies(self,
                           df: pd.DataFrame,
                           anomaly_types: List[str] = None,
-                          anomaly_percentage: float = 0.05,
-                          preserve_originals: bool = True) -> Tuple[pd.DataFrame, Dict[str, np.ndarray]]:
+                          anomaly_percentage: float = 0.05) -> pd.DataFrame:
         """Generate synthetic anomalies by adding new rows to the dataset.
         
         Args:
             df: Original procurement dataframe
-            anomaly_types: List of anomaly types to generate. If None, generates all types
-            anomaly_percentage: Percentage of synthetic anomalies relative to original data
-            preserve_originals: Whether to keep original anomalous patterns intact
+            anomaly_types: List of anomaly types to generate
+            anomaly_percentage: Percentage of synthetic anomalies relative to 
+                original data
             
         Returns:
-            Tuple of (dataframe with added anomalous rows, dictionary of anomaly labels)
+            DataFrame with added anomalous rows and is_synthetic_anomaly column
         """
         
         if anomaly_types is None:
             anomaly_types = [
                 'single_bid_competitive',
-                'high_market_concentration', 
-                'price_manipulation',
+                'price_inflation',
+                'price_deflation',
                 'procedure_manipulation',
                 'suspicious_modifications',
+                'high_market_concentration',
                 'temporal_clustering',
                 'excessive_subcontracting',
-                'unusual_contract_duration',
+                'short_contract_duration',
                 'suspicious_buyer_supplier_pairs'
             ]
         
@@ -77,59 +76,48 @@ class SyntheticAnomalyGenerator:
         total_anomalies = int(len(df_original) * anomaly_percentage)
         anomalies_per_type = max(1, total_anomalies // len(anomaly_types))
         
-        logger.info(f"Generating {total_anomalies} total synthetic anomaly rows across {len(anomaly_types)} types")
+        logger.info(f"Generating {total_anomalies} total synthetic anomaly "
+                    f"rows")
         logger.info(f"Approximately {anomalies_per_type} anomalies per type")
         
         # Store all new anomalous rows
         all_anomalous_rows = []
         
+        # Method mapping for cleaner code
+        method_map = {
+            'single_bid_competitive': self._generate_single_bid_anomalies,
+            'price_inflation': self._generate_price_inflation_anomalies,
+            'price_deflation': self._generate_price_deflation_anomalies,
+            'procedure_manipulation': (
+                self._generate_procedure_manipulation_anomalies),
+            'suspicious_modifications': (
+                self._generate_suspicious_modification_anomalies),
+            'high_market_concentration': (
+                self._generate_high_market_concentration_anomalies),
+            'temporal_clustering': (
+                self._generate_temporal_clustering_anomalies),
+            'excessive_subcontracting': (
+                self._generate_excessive_subcontracting_anomalies),
+            'short_contract_duration': self._generate_short_duration_anomalies,
+            'suspicious_buyer_supplier_pairs': (
+                self._generate_suspicious_pairs_anomalies)
+        }
+        
         # Generate each type of anomaly
         for anomaly_type in anomaly_types:
-            logger.info(f"Generating {anomaly_type} anomalies...")
-            
-            if anomaly_type == 'single_bid_competitive':
-                new_rows = self._generate_single_bid_anomalies(
-                    df_original, anomalies_per_type, anomaly_type)
-                    
-            elif anomaly_type == 'high_market_concentration':
-                new_rows = self._generate_market_concentration_anomalies(
-                    df_original, anomalies_per_type, anomaly_type)
-                    
-            elif anomaly_type == 'price_manipulation':
-                new_rows = self._generate_price_manipulation_anomalies(
-                    df_original, anomalies_per_type, anomaly_type)
-                    
-            elif anomaly_type == 'procedure_manipulation':
-                new_rows = self._generate_procedure_manipulation_anomalies(
-                    df_original, anomalies_per_type, anomaly_type)
-                    
-            elif anomaly_type == 'suspicious_modifications':
-                new_rows = self._generate_suspicious_modification_anomalies(
-                    df_original, anomalies_per_type, anomaly_type)
-                    
-            elif anomaly_type == 'temporal_clustering':
-                new_rows = self._generate_temporal_clustering_anomalies(
-                    df_original, anomalies_per_type, anomaly_type)
-                    
-            elif anomaly_type == 'excessive_subcontracting':
-                new_rows = self._generate_excessive_subcontracting_anomalies(
-                    df_original, anomalies_per_type, anomaly_type)
-                    
-            elif anomaly_type == 'unusual_contract_duration':
-                new_rows = self._generate_unusual_duration_anomalies(
-                    df_original, anomalies_per_type, anomaly_type)
-                    
-            elif anomaly_type == 'suspicious_buyer_supplier_pairs':
-                new_rows = self._generate_suspicious_pairs_anomalies(
-                    df_original, anomalies_per_type, anomaly_type)
-            
-            if len(new_rows) > 0:
-                all_anomalous_rows.extend(new_rows)
+            if anomaly_type in method_map:
+                logger.info(f"Generating {anomaly_type} anomalies...")
+                new_rows = method_map[anomaly_type](df_original,
+                                                    anomalies_per_type,
+                                                    anomaly_type)
+                if len(new_rows) > 0:
+                    all_anomalous_rows.extend(new_rows)
         
         # Combine original data with synthetic anomalies
         if all_anomalous_rows:
             anomalous_df = pd.DataFrame(all_anomalous_rows)
-            df_combined = pd.concat([df_original, anomalous_df], ignore_index=True)
+            df_combined = pd.concat([df_original, anomalous_df],
+                                    ignore_index=True)
         else:
             df_combined = df_original.copy()
         
@@ -137,41 +125,62 @@ class SyntheticAnomalyGenerator:
         n_original = len(df_original)
         n_total = len(df_combined)
         
-        # Initialize labels - original rows are False, synthetic rows will be True
+        # Initialize labels - original rows are False, synthetic rows will be
+        # True
         self.anomaly_labels = {}
         for anomaly_type in anomaly_types:
             self.anomaly_labels[anomaly_type] = np.zeros(n_total, dtype=bool)
+        
+        # Create anomaly type mapping (0 = no anomaly, 1+ = specific anomaly
+        # types)
+        anomaly_type_mapping = {anomaly_type: i + 1
+                                for i, anomaly_type in enumerate(anomaly_types)}
+        
+        # Store the mapping as instance variable for easy access
+        self.anomaly_type_mapping = anomaly_type_mapping
+        
+        # Add general anomaly indicator column (0 = no anomaly, 1+ = anomaly
+        # type number)
+        df_combined['is_synthetic_anomaly'] = np.zeros(len(df_combined),
+                                                       dtype=int)
         
         # Mark synthetic anomalies
         current_idx = n_original
         for row_data in all_anomalous_rows:
             if 'anomaly_type' in row_data:
                 anomaly_type = row_data['anomaly_type']
-                self.anomaly_labels[anomaly_type][current_idx] = True
+                if anomaly_type in self.anomaly_labels:
+                    self.anomaly_labels[anomaly_type][current_idx] = True
+                    # Set the anomaly type number in the indicator column
+                    if anomaly_type in anomaly_type_mapping:
+                        df_combined.loc[current_idx, 'is_synthetic_anomaly'] = (
+                            anomaly_type_mapping[anomaly_type])
             current_idx += 1
         
-        # Add general anomaly indicator column
-        df_combined['is_synthetic_anomaly'] = np.zeros(len(df_combined), dtype=bool)
-        df_combined.loc[n_original:, 'is_synthetic_anomaly'] = True
-        
         # Log summary
-        total_synthetic_anomalies = np.sum(df_combined['is_synthetic_anomaly'])
-        logger.info(f"Generated {total_synthetic_anomalies} total synthetic anomaly rows")
+        total_synthetic_anomalies = np.sum(
+            df_combined['is_synthetic_anomaly'] > 0)
+        logger.info(f"Generated {total_synthetic_anomalies} total synthetic "
+                    f"anomaly rows")
         logger.info(f"Original dataset: {n_original} rows")
-        logger.info(f"Combined dataset: {len(df_combined)} rows ({total_synthetic_anomalies/len(df_combined)*100:.2f}% synthetic)")
+        logger.info(f"Combined dataset: {len(df_combined)} rows "
+                    f"({total_synthetic_anomalies/len(df_combined)*100:.2f}% "
+                    f"synthetic)")
         
-        for anomaly_type, labels in self.anomaly_labels.items():
-            count = np.sum(labels)
-            logger.info(f"  - {anomaly_type}: {count} anomalies")
+        # Log anomaly type mapping
+        logger.info("Anomaly type mapping:")
+        for anomaly_type, type_number in anomaly_type_mapping.items():
+            count = np.sum(self.anomaly_labels[anomaly_type])
+            logger.info(f"  - {type_number}: {anomaly_type} "
+                        f"({count} anomalies)")
         
-        return df_combined, self.anomaly_labels
+        return df_combined
     
     def _generate_single_bid_anomalies(self, df: pd.DataFrame, n_anomalies: int, anomaly_type: str) -> List[Dict]:
         """Generate new rows with single bid competitive anomalies."""
         
         # Find competitive procedures with more than 1 bid as templates
-        competitive_procedures = ["Appel d'offres ouvert", "Appel d'offres restreint", 
-                                "Procédure concurrentielle avec négociation"]
+        competitive_procedures = ["Appel d'offres ouvert", "Appel d'offres restreint"]
         
         mask = (df['procedure'].isin(competitive_procedures) & 
                 (df['offresRecues'] > 1) & 
@@ -203,10 +212,149 @@ class SyntheticAnomalyGenerator:
         logger.info(f"Generated {len(new_rows)} single bid competitive anomaly rows")
         return new_rows
     
-    def _generate_market_concentration_anomalies(self, df: pd.DataFrame, n_anomalies: int, anomaly_type: str) -> List[Dict]:
-        """Generate new rows where one supplier dominates a buyer's contracts."""
+    def _generate_price_inflation_anomalies(self, df: pd.DataFrame, n_anomalies: int, anomaly_type: str) -> List[Dict]:
+        """Generate new rows with artificially inflated prices."""
         
-        # Find buyer-CPV combinations with multiple suppliers
+        # Find contracts with valid amounts as templates
+        mask = df['montant'].notna() & (df['montant'] > 0)
+        eligible_rows = df[mask]
+        
+        if len(eligible_rows) == 0:
+            logger.warning("No eligible contracts found for price inflation anomalies")
+            return []
+        
+        # Select random template rows
+        selected_rows = eligible_rows.sample(n=min(n_anomalies, len(eligible_rows)), random_state=self.random_seed)
+        
+        new_rows = []
+        for _, row in selected_rows.iterrows():
+            # Create new anomalous row based on template
+            new_row = row.copy()
+            original_amount = new_row['montant']
+            
+            # Inflate by 200-500%
+            multiplier = random.uniform(3.0, 6.0)
+
+            new_row['montant'] = original_amount * multiplier
+            
+            # Add anomaly metadata
+            new_row['anomaly_type'] = anomaly_type
+            new_row['source_type'] = 'synthetic'
+            
+            new_rows.append(new_row.to_dict())
+        
+        logger.info(f"Generated {len(new_rows)} price inflation anomaly rows")
+        return new_rows
+    
+    def _generate_price_deflation_anomalies(self, df: pd.DataFrame, n_anomalies: int, anomaly_type: str) -> List[Dict]:
+        """Generate new rows with artificially deflated prices."""
+        
+        # Find contracts with valid amounts as templates
+        mask = df['montant'].notna() & (df['montant'] > 0)
+        eligible_rows = df[mask]
+        
+        if len(eligible_rows) == 0:
+            logger.warning("No eligible contracts found for price deflation anomalies")
+            return []
+        
+        # Select random template rows
+        selected_rows = eligible_rows.sample(n=min(n_anomalies, len(eligible_rows)), random_state=self.random_seed)
+        
+        new_rows = []
+        for _, row in selected_rows.iterrows():
+            # Create new anomalous row based on template
+            new_row = row.copy()
+            original_amount = new_row['montant']
+            
+            # Deflate to 10-30% of original
+            multiplier = random.uniform(0.1, 0.3)
+            new_row['montant'] = original_amount * multiplier
+            
+            # Add anomaly metadata
+            new_row['anomaly_type'] = anomaly_type
+            new_row['source_type'] = 'synthetic'
+            
+            new_rows.append(new_row.to_dict())
+        
+        logger.info(f"Generated {len(new_rows)} price deflation anomaly rows")
+        return new_rows
+    
+    def _generate_procedure_manipulation_anomalies(self, df: pd.DataFrame, n_anomalies: int, anomaly_type: str) -> List[Dict]:
+        """Generate new rows with suspicious procedure manipulation."""
+        
+        # Find competitive procedures as templates
+        competitive_procedures = ["Appel d'offres ouvert", "Appel d'offres restreint"]
+        mask = df['procedure'].isin(competitive_procedures)
+        eligible_rows = df[mask]
+        
+        if len(eligible_rows) == 0:
+            logger.warning("No eligible contracts found for procedure manipulation anomalies")
+            return []
+        
+        # Non-competitive procedures to switch to
+        non_competitive = ['Procédure adaptée', 'Marché négocié sans publicité']
+        
+        # Select random template rows
+        selected_rows = eligible_rows.sample(n=min(n_anomalies, len(eligible_rows)), random_state=self.random_seed)
+        
+        new_rows = []
+        for _, row in selected_rows.iterrows():
+            # Create new anomalous row based on template
+            new_row = row.copy()
+            
+            # Switch to non-competitive procedure
+            new_row['procedure'] = random.choice(non_competitive)
+            
+            # Add anomaly metadata
+            new_row['anomaly_type'] = anomaly_type
+            new_row['source_type'] = 'synthetic'
+            
+            new_rows.append(new_row.to_dict())
+        
+        logger.info(f"Generated {len(new_rows)} procedure manipulation anomaly rows")
+        return new_rows
+    
+    def _generate_suspicious_modification_anomalies(self, df: pd.DataFrame, n_anomalies: int, anomaly_type: str) -> List[Dict]:
+        """Generate new rows suggesting suspicious contract modifications."""
+        
+        # Find contracts with reasonable duration as templates
+        mask = df['dureeMois'].notna() & (df['dureeMois'] > 0) & (df['dureeMois'] < 36)
+        eligible_rows = df[mask]
+        
+        if len(eligible_rows) == 0:
+            logger.warning("No eligible contracts found for suspicious modification anomalies")
+            return []
+        
+        # Select random template rows
+        selected_rows = eligible_rows.sample(n=min(n_anomalies, len(eligible_rows)), random_state=self.random_seed)
+        
+        new_rows = []
+        for _, row in selected_rows.iterrows():
+            # Create new anomalous row based on template
+            new_row = row.copy()
+            original_duration = new_row['dureeMois']
+            
+            # Dramatically increase duration (simulate contract modification)
+            new_duration = original_duration * random.uniform(2.5, 5.0)
+            new_row['dureeMois'] = new_duration
+            
+            # Add anomaly metadata
+            new_row['anomaly_type'] = anomaly_type
+            new_row['source_type'] = 'synthetic'
+            
+            new_rows.append(new_row.to_dict())
+        
+        logger.info(f"Generated {len(new_rows)} suspicious modification anomaly rows")
+        return new_rows
+    
+    def _generate_high_market_concentration_anomalies(self, df: pd.DataFrame, n_anomalies: int, anomaly_type: str) -> List[Dict]:
+        """Generate new rows with high market concentration anomalies.
+        
+        Creates anomalies where a single supplier dominates a buyer's contracts,
+        indicating potential market concentration issues.
+        """
+        
+        # Find buyer-CPV combinations with multiple suppliers as templates
         buyer_cpv_groups = df.groupby(['acheteur_id', 'codeCPV_3'])
         
         eligible_groups = []
@@ -240,18 +388,62 @@ class SyntheticAnomalyGenerator:
                 
                 new_rows.append(new_row.to_dict())
         
-        logger.info(f"Generated {len(new_rows)} market concentration anomaly rows")
+        logger.info(f"Generated {len(new_rows)} high market concentration anomaly rows")
         return new_rows
     
-    def _generate_price_manipulation_anomalies(self, df: pd.DataFrame, n_anomalies: int, anomaly_type: str) -> List[Dict]:
-        """Generate new rows with artificially inflated or deflated prices."""
+    def _generate_temporal_clustering_anomalies(self, df: pd.DataFrame, n_anomalies: int, anomaly_type: str) -> List[Dict]:
+        """Generate new rows with suspicious temporal clustering patterns."""
         
-        # Find contracts with valid amounts as templates
-        mask = df['montant'].notna() & (df['montant'] > 0)
+        # Find buyer-supplier pairs with multiple contracts as templates
+        buyer_supplier_pairs = df.groupby(['acheteur_id', 'titulaire_id']).size()
+        eligible_pairs = buyer_supplier_pairs[buyer_supplier_pairs >= 3].index.tolist()
+        
+        if len(eligible_pairs) == 0:
+            logger.warning("No eligible buyer-supplier pairs found for temporal clustering anomalies")
+            return []
+        
+        # Select pairs to create clustered contracts from
+        selected_pairs = random.sample(
+            eligible_pairs,
+            min(len(eligible_pairs), n_anomalies // 3))
+        
+        new_rows = []
+        for buyer_id, supplier_id in selected_pairs:
+            pair_contracts = df[(df['acheteur_id'] == buyer_id) & 
+                              (df['titulaire_id'] == supplier_id)]
+            
+            # Pick a template contract and create clustered ones
+            template_contracts = pair_contracts.sample(n=min(3, len(pair_contracts)), random_state=self.random_seed)
+            
+            # Pick a random date and cluster contracts around it
+            base_date = datetime(2023, random.randint(1, 12), random.randint(1, 28))
+            
+            for i, (_, row) in enumerate(template_contracts.iterrows()):
+                new_row = row.copy()
+                
+                # Create clustered date (within 2 weeks of each other)
+                clustered_date = base_date + timedelta(days=random.randint(0, 14))
+                new_row['dateNotification'] = clustered_date.strftime('%Y-%m-%d')
+                
+                # Add anomaly metadata
+                new_row['anomaly_type'] = anomaly_type
+                new_row['source_type'] = 'synthetic'
+                
+                new_rows.append(new_row.to_dict())
+        
+        logger.info(f"Generated {len(new_rows)} temporal clustering anomaly rows")
+        return new_rows
+    
+    def _generate_excessive_subcontracting_anomalies(self, df: pd.DataFrame, n_anomalies: int, anomaly_type: str) -> List[Dict]:
+        """Generate new rows with excessive subcontracting patterns."""
+        
+        # Find contracts that currently don't declare subcontracting as templates
+        mask = (df['sousTraitanceDeclaree'].notna() & 
+                (df['sousTraitanceDeclaree'] == 0))
         eligible_rows = df[mask]
         
         if len(eligible_rows) == 0:
-            logger.warning("No eligible contracts found for price manipulation anomalies")
+            logger.warning("No eligible contracts found for excessive subcontracting anomalies")
             return []
         
         # Select random template rows
@@ -261,17 +453,9 @@ class SyntheticAnomalyGenerator:
         for _, row in selected_rows.iterrows():
             # Create new anomalous row based on template
             new_row = row.copy()
-            original_amount = new_row['montant']
             
-            # Randomly choose inflation or deflation
-            if random.random() < 0.5:
-                # Inflate by 200-500%
-                multiplier = random.uniform(3.0, 6.0)
-            else:
-                # Deflate to 10-30% of original
-                multiplier = random.uniform(0.1, 0.3)
-            
-            new_row['montant'] = original_amount * multiplier
+            # Make it anomalous: mark as having declared subcontracting
+            new_row['sousTraitanceDeclaree'] = 1
             
             # Add anomaly metadata
             new_row['anomaly_type'] = anomaly_type
@@ -279,205 +463,91 @@ class SyntheticAnomalyGenerator:
             
             new_rows.append(new_row.to_dict())
         
-        logger.info(f"Generated {len(new_rows)} price manipulation anomaly rows")
+        logger.info(f"Generated {len(new_rows)} excessive subcontracting anomaly rows")
         return new_rows
     
-    def _generate_procedure_manipulation_anomalies(self, df: pd.DataFrame, n_anomalies: int) -> pd.DataFrame:
-        """Generate anomalies where buyers switch to non-competitive procedures suspiciously."""
+    def _generate_short_duration_anomalies(self, df: pd.DataFrame, n_anomalies: int, anomaly_type: str) -> List[Dict]:
+        """Generate new rows with unusually short contract durations."""
         
-        # Find buyers who normally use competitive procedures
-        buyer_procedure_stats = df.groupby('acheteur_id')['procedure'].agg(['count', 'nunique']).reset_index()
-        buyer_procedure_stats = buyer_procedure_stats[buyer_procedure_stats['count'] >= 5]  # At least 5 contracts
+        # Find contracts with valid duration (> 1 month) as templates
+        mask = df['dureeMois'].notna() & (df['dureeMois'] > 1)
+        eligible_rows = df[mask]
         
-        competitive_procedures = ['Appel d\'offres ouvert', 'Appel d\'offres restreint']
-        non_competitive = ['Procédure adaptée', 'Marché négocié sans publicité']
-        
-        eligible_buyers = []
-        for buyer_id in buyer_procedure_stats['acheteur_id']:
-            buyer_contracts = df[df['acheteur_id'] == buyer_id]
-            competitive_ratio = buyer_contracts['procedure'].isin(competitive_procedures).mean()
-            
-            if competitive_ratio > 0.7:  # Normally uses competitive procedures
-                eligible_buyers.append(buyer_id)
-        
-        if len(eligible_buyers) == 0:
-            logger.warning("No eligible buyers found for procedure manipulation anomalies")
-            return df
-        
-        # Select contracts from these buyers and change to non-competitive
-        anomaly_count = 0
-        for buyer_id in random.sample(eligible_buyers, min(len(eligible_buyers), n_anomalies // 2)):
-            buyer_contracts = df[(df['acheteur_id'] == buyer_id) & 
-                               df['procedure'].isin(competitive_procedures)]
-            
-            if len(buyer_contracts) > 0:
-                # Change 1-3 contracts to non-competitive
-                n_to_change = min(random.randint(1, 3), len(buyer_contracts))
-                selected_indices = random.sample(buyer_contracts.index.tolist(), n_to_change)
-                
-                for idx in selected_indices:
-                    df.loc[idx, 'procedure'] = random.choice(non_competitive)
-                
-                self.anomaly_labels['procedure_manipulation'][selected_indices] = True
-                anomaly_count += len(selected_indices)
-        
-        logger.info(f"Generated {anomaly_count} procedure manipulation anomalies")
-        return df
-    
-    def _generate_suspicious_modification_anomalies(self, df: pd.DataFrame, n_anomalies: int) -> pd.DataFrame:
-        """Generate anomalies suggesting suspicious contract modifications."""
-        
-        # Find contracts that could be "modified" (increase duration dramatically)
-        mask = df['dureeMois'].notna() & (df['dureeMois'] > 0) & (df['dureeMois'] < 36)
-        eligible_indices = df[mask].index.tolist()
-        
-        if len(eligible_indices) == 0:
-            logger.warning("No eligible contracts found for suspicious modification anomalies")
-            return df
-        
-        selected_indices = np.random.choice(
-            eligible_indices,
-            size=min(n_anomalies, len(eligible_indices)),
-            replace=False)
-        
-        for idx in selected_indices:
-            original_duration = df.loc[idx, 'dureeMois']
-            # Dramatically increase duration (simulate contract modification)
-            new_duration = original_duration * random.uniform(2.5, 5.0)
-            df.loc[idx, 'dureeMois'] = new_duration
-        
-        self.anomaly_labels['suspicious_modifications'][selected_indices] = True
-        
-        logger.info(f"Generated {len(selected_indices)} suspicious modification anomalies")
-        return df
-    
-
-    
-    def _generate_temporal_clustering_anomalies(self, df: pd.DataFrame, n_anomalies: int) -> pd.DataFrame:
-        """Generate anomalies with suspicious temporal patterns."""
-        
-        # Convert date strings to datetime if needed
-        if 'dateNotification' in df.columns:
-            df['dateNotification'] = pd.to_datetime(df['dateNotification'], errors='coerce')
-        
-        # Find buyer-supplier pairs
-        buyer_supplier_pairs = df.groupby(['acheteur_id', 'titulaire_id']).size()
-        eligible_pairs = buyer_supplier_pairs[buyer_supplier_pairs >= 3].index.tolist()
-        
-        if len(eligible_pairs) == 0:
-            logger.warning("No eligible buyer-supplier pairs found for temporal clustering anomalies")
-            return df
-        
-        # Select pairs and cluster their contracts in time
-        selected_pairs = random.sample(
-            eligible_pairs,
-            min(len(eligible_pairs), n_anomalies // 3))
-        
-        anomaly_count = 0
-        for buyer_id, supplier_id in selected_pairs:
-            pair_contracts = df[(df['acheteur_id'] == buyer_id) & 
-                              (df['titulaire_id'] == supplier_id)]
-            
-            # Pick a random date and cluster contracts around it
-            base_date = datetime(2023, random.randint(1, 12), random.randint(1, 28))
-            
-            for i, idx in enumerate(pair_contracts.index[:3]):  # Cluster up to 3 contracts
-                # Contracts within 2 weeks of each other
-                clustered_date = base_date + timedelta(days=random.randint(0, 14))
-                df.loc[idx, 'dateNotification'] = clustered_date
-                
-                self.anomaly_labels['temporal_clustering'][idx] = True
-                anomaly_count += 1
-        
-        logger.info(f"Generated {anomaly_count} temporal clustering anomalies")
-        return df
-    
-    def _generate_excessive_subcontracting_anomalies(self, df: pd.DataFrame, n_anomalies: int) -> pd.DataFrame:
-        """Generate anomalies with excessive subcontracting patterns."""
-        
-        # Find contracts that currently don't declare subcontracting
-        mask = (df['sousTraitanceDeclaree'].notna() & 
-                (df['sousTraitanceDeclaree'] == 0))
-        eligible_indices = df[mask].index.tolist()
-        
-        if len(eligible_indices) == 0:
-            logger.warning("No eligible contracts found for excessive subcontracting anomalies")
-            return df
-        
-        selected_indices = np.random.choice(
-            eligible_indices,
-            size=min(n_anomalies, len(eligible_indices)),
-            replace=False)
-        
-        # Mark these as having declared subcontracting
-        df.loc[selected_indices, 'sousTraitanceDeclaree'] = 1
-        
-        self.anomaly_labels['excessive_subcontracting'][selected_indices] = True
-        
-        logger.info(f"Generated {len(selected_indices)} excessive subcontracting anomalies")
-        return df
-    
-    def _generate_unusual_duration_anomalies(self, df: pd.DataFrame, n_anomalies: int) -> pd.DataFrame:
-        """Generate anomalies with unusually short or long contract durations."""
-        
-        mask = df['dureeMois'].notna() & (df['dureeMois'] > 0)
-        eligible_indices = df[mask].index.tolist()
-        
-        if len(eligible_indices) == 0:
+        if len(eligible_rows) == 0:
             logger.warning("No eligible contracts found for unusual duration anomalies")
-            return df
+            return []
         
-        selected_indices = np.random.choice(
-            eligible_indices,
-            size=min(n_anomalies, len(eligible_indices)),
-            replace=False)
+        # Select random template rows
+        selected_rows = eligible_rows.sample(n=min(n_anomalies, len(eligible_rows)), random_state=self.random_seed)
         
-        for idx in selected_indices:
-            # Randomly choose very short (< 1 month) or very long (> 10 years)
-            if random.random() < 0.5:
-                df.loc[idx, 'dureeMois'] = random.uniform(0.1, 0.9)  # Very short
-            else:
-                df.loc[idx, 'dureeMois'] = random.uniform(120, 240)  # Very long (10-20 years)
+        new_rows = []
+        for _, row in selected_rows.iterrows():
+            # Create new anomalous row based on template
+            new_row = row.copy()
+            
+            # Make it anomalous: set to very short duration (< 1 month)
+            new_row['dureeMois'] = random.uniform(0.1, 0.9)
+            
+            # Add anomaly metadata
+            new_row['anomaly_type'] = anomaly_type
+            new_row['source_type'] = 'synthetic'
+            
+            new_rows.append(new_row.to_dict())
         
-        self.anomaly_labels['unusual_contract_duration'][selected_indices] = True
-        
-        logger.info(f"Generated {len(selected_indices)} unusual duration anomalies")
-        return df
+        logger.info(f"Generated {len(new_rows)} unusual short duration anomaly rows")
+        return new_rows
     
-    def _generate_suspicious_pairs_anomalies(self, df: pd.DataFrame, n_anomalies: int) -> pd.DataFrame:
-        """Generate anomalies with suspicious buyer-supplier relationship patterns."""
+    def _generate_suspicious_pairs_anomalies(self, df: pd.DataFrame, n_anomalies: int, anomaly_type: str) -> List[Dict]:
+        """Generate new rows with suspicious buyer-supplier relationship patterns."""
         
-        # Create artificial "suspicious" relationships by making certain pairs 
-        # win disproportionately high amounts
-        buyer_supplier_amounts = df.groupby(['acheteur_id', 'titulaire_id'])['montant'].agg(['sum', 'count']).reset_index()
-        eligible_pairs = buyer_supplier_amounts[buyer_supplier_amounts['count'] >= 2]
+        # Find buyer-supplier pairs with multiple contracts and valid amounts
+        buyer_supplier_amounts = df.groupby(['acheteur_id', 'titulaire_id']).agg({
+            'montant': ['sum', 'count']
+        }).reset_index()
+        buyer_supplier_amounts.columns = ['acheteur_id', 'titulaire_id', 'sum_montant', 'count_contracts']
+        
+        # Filter for pairs with at least 2 contracts and valid amounts
+        eligible_pairs = buyer_supplier_amounts[
+            (buyer_supplier_amounts['count_contracts'] >= 2) & 
+            (buyer_supplier_amounts['sum_montant'].notna()) &
+            (buyer_supplier_amounts['sum_montant'] > 0)
+        ]
         
         if len(eligible_pairs) == 0:
             logger.warning("No eligible buyer-supplier pairs found for suspicious pairs anomalies")
-            return df
+            return []
         
-        # Select pairs and inflate their contract amounts
-        selected_pairs = eligible_pairs.sample(min(len(eligible_pairs), n_anomalies // 2))
+        # Select pairs to create suspicious relationships from
+        selected_pairs = eligible_pairs.sample(min(len(eligible_pairs), n_anomalies // 2), random_state=self.random_seed)
         
-        anomaly_count = 0
+        new_rows = []
         for _, row in selected_pairs.iterrows():
             buyer_id = row['acheteur_id']
             supplier_id = row['titulaire_id']
             
+            # Find contracts for this pair as templates
             pair_contracts = df[(df['acheteur_id'] == buyer_id) & 
                               (df['titulaire_id'] == supplier_id)]
             
-            # Inflate amounts for this pair
-            for idx in pair_contracts.index:
-                original_amount = df.loc[idx, 'montant']
+            # Create new contracts with inflated amounts for this pair
+            template_contracts = pair_contracts.sample(n=min(2, len(pair_contracts)), random_state=self.random_seed)
+            
+            for _, template_row in template_contracts.iterrows():
+                new_row = template_row.copy()
+                
+                # Make it anomalous: inflate the amount significantly
+                original_amount = new_row['montant']
                 if pd.notna(original_amount) and original_amount > 0:
-                    df.loc[idx, 'montant'] = original_amount * random.uniform(1.5, 3.0)
-                    
-                    self.anomaly_labels['suspicious_buyer_supplier_pairs'][idx] = True
-                    anomaly_count += 1
+                    new_row['montant'] = original_amount * random.uniform(1.5, 3.0)
+                
+                # Add anomaly metadata
+                new_row['anomaly_type'] = anomaly_type
+                new_row['source_type'] = 'synthetic'
+                
+                new_rows.append(new_row.to_dict())
         
-        logger.info(f"Generated {anomaly_count} suspicious buyer-supplier pair anomalies")
-        return df
+        logger.info(f"Generated {len(new_rows)} suspicious buyer-supplier pair anomaly rows")
+        return new_rows
     
     def get_anomaly_summary(self) -> pd.DataFrame:
         """Get a summary of generated anomalies."""
@@ -508,12 +578,29 @@ class SyntheticAnomalyGenerator:
         for col in labels_df.columns:
             self.anomaly_labels[col] = labels_df[col].values.astype(bool)
         logger.info(f"Anomaly labels loaded from {filepath}")
+    
+    def get_anomaly_type_mapping(self) -> Dict[str, int]:
+        """Get the mapping between anomaly types and their numeric codes.
+        
+        Returns:
+            Dictionary mapping anomaly type names to numeric codes (1-N)
+        """
+        return getattr(self, 'anomaly_type_mapping', {})
+    
+    def get_reverse_anomaly_mapping(self) -> Dict[int, str]:
+        """Get the reverse mapping from numeric codes to anomaly type names.
+        
+        Returns:
+            Dictionary mapping numeric codes to anomaly type names
+        """
+        mapping = self.get_anomaly_type_mapping()
+        return {v: k for k, v in mapping.items()}
 
 
 def demonstrate_anomaly_generation(df: pd.DataFrame, sample_size: int = 1000) -> None:
     """Demonstrate the anomaly generation functionality."""
     
-    print("=== Synthetic Anomaly Generation Demonstration ===\n")
+    print("=== Synthetic Anomaly Generation Demonstration (V2) ===\n")
     
     # Take a sample for demonstration
     if len(df) > sample_size:
@@ -526,12 +613,11 @@ def demonstrate_anomaly_generation(df: pd.DataFrame, sample_size: int = 1000) ->
     # Initialize generator
     generator = SyntheticAnomalyGenerator(random_seed=42)
     
-    # Generate anomalies
-    df_with_anomalies, anomaly_labels = generator.generate_anomalies(
+    # Generate anomalies (adding new rows)
+    df_with_anomalies = generator.generate_anomalies(
         df_sample,
         anomaly_percentage=0.10,  # 10% anomalies
-        anomaly_types=['single_bid_competitive', 'price_manipulation', 
-                      'high_market_concentration', 'procedure_manipulation']
+        anomaly_types=['single_bid_competitive', 'price_manipulation']
     )
     
     # Show summary
@@ -540,23 +626,23 @@ def demonstrate_anomaly_generation(df: pd.DataFrame, sample_size: int = 1000) ->
     print(summary.to_string(index=False))
     
     # Show some examples
-    print(f"\nTotal synthetic anomalies: {np.sum(df_with_anomalies['is_synthetic_anomaly'])}")
-    print(f"Percentage of dataset: {np.sum(df_with_anomalies['is_synthetic_anomaly'])/len(df_with_anomalies)*100:.2f}%")
+    total_synthetic = np.sum(df_with_anomalies['is_synthetic_anomaly'])
+    print(f"\nTotal synthetic anomaly rows: {total_synthetic}")
+    print(f"Original rows: {len(df_sample)}")
+    print(f"Combined dataset: {len(df_with_anomalies)} rows")
+    print(f"Percentage synthetic: {total_synthetic/len(df_with_anomalies)*100:.2f}%")
     
-    # Show examples of each anomaly type
-    print("\nExamples of generated anomalies:")
-    for anomaly_type in ['single_bid_competitive', 'price_manipulation']:
-        if anomaly_type in anomaly_labels:
-            anomalous_rows = df_with_anomalies[anomaly_labels[anomaly_type]]
-            if len(anomalous_rows) > 0:
-                print(f"\n{anomaly_type.upper()} example:")
-                relevant_cols = ['acheteur_id', 'titulaire_id', 'procedure', 'montant', 'offresRecues']
-                available_cols = [col for col in relevant_cols if col in anomalous_rows.columns]
-                print(anomalous_rows[available_cols].head(1).to_string(index=False))
+    # Show examples of synthetic anomalies
+    synthetic_rows = df_with_anomalies[df_with_anomalies['is_synthetic_anomaly'] > 0]
+    if len(synthetic_rows) > 0:
+        print("\nExample synthetic anomaly rows:")
+        relevant_cols = ['acheteur_id', 'titulaire_id', 'procedure', 'montant', 'offresRecues', 'anomaly_type', 'is_synthetic_anomaly']
+        available_cols = [col for col in relevant_cols if col in synthetic_rows.columns]
+        print(synthetic_rows[available_cols].head(3).to_string(index=False))
 
 
 if __name__ == "__main__":
     # Example usage
-    print("Synthetic Anomaly Generator - Example Usage")
-    print("This module should be imported and used with your procurement dataset.")
-    print("See the demonstrate_anomaly_generation() function for usage examples.")
+    print("Synthetic Anomaly Generator V2 - Example Usage")
+    print("This module creates synthetic anomalies by adding new rows to the dataset.")
+    print("See the demonstrate_anomaly_generation() function for usage examples.") 

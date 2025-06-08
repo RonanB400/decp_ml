@@ -17,7 +17,7 @@ import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Import the V2 version which has all methods properly updated
-from synthetic_anomaly_generator_v2 import SyntheticAnomalyGenerator
+from scripts.synthetic_anomaly_generator import SyntheticAnomalyGenerator
 
 # Your existing code should work with this change:
 def test_anomaly_generation(df):
