@@ -342,7 +342,7 @@ def create_pipeline_cat(cat):
                           'marcheInnovant', 'idAccordCadre']
         categorical_columns = ['procedure', 'nature', 'formePrix', 'ccag',
                                'typeGroupementOperateurs', 'tauxAvance_cat',
-                               'codeCPV_2'
+                               'codeCPV_2_3'
                                ]
 
     elif cat == 'marche_sim':

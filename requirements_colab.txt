@@ -1,0 +1,11 @@
+pandas==2.2.2
+numpy==1.26.4
+matplotlib==3.10.0
+seaborn==0.13.2
+scikit-learn==1.6.1
+tensorflow==2.14.0
+tensorflow-gnn==1.0.3
+tensorflow-estimator==2.14.0
+tensorflow-io-gcs-filesystem==0.37.1
+networkx==3.4.2
+
