@@ -29,12 +29,14 @@ import networkx as nx
 
 from scripts.preprocess_pipeline import create_pipeline
 from scripts.data_cleaner import filter_top_cpv_categories
-from scripts.synthetic_anomaly_generator import SyntheticAnomalyGenerator
+from scripts.synthetic_anomaly_generator import (SyntheticAnomalyGenerator,
+                                                OriginalAnomalyRemover)
 
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 
 
 class ProcurementGraphBuilder:
@@ -65,18 +67,7 @@ class ProcurementGraphBuilder:
         # Fill missing values
         X = filter_top_cpv_categories(X, top_n=60, cpv_column='codeCPV_3')
 
-        # Preprocess pipeline
-        numerical_columns = ['montant', 'dureeMois', 'offresRecues']
-
-        binary_columns = ['sousTraitanceDeclaree', 'origineFrance', 
-                          'marcheInnovant', 'idAccordCadre']
-        
-        categorical_columns = ['procedure', 'nature', 'formePrix', 'ccag',
-                               'typeGroupementOperateurs', 'tauxAvance_cat',
-                               'codeCPV_3']
-        
-        nodes_columns = ['acheteur_id', 'titulaire_id']
-        
+        # Split data first, before removing original anomalies
         X_train, X_test = train_test_split(X, 
                                            test_size=0.2, 
                                            random_state=0, 
@@ -88,6 +79,50 @@ class ProcurementGraphBuilder:
                                           random_state=0, 
                                           stratify=X_train['codeCPV_3'], 
                                           shuffle=True)
+
+        # Remove original anomalies from training and validation sets
+        logger.info("Removing original anomalies from training and validation sets...")
+        anomaly_remover = OriginalAnomalyRemover()
+
+        anomaly_types = ['single_bid_competitive', 
+                        'price_inflation',
+                        'price_deflation',
+                        #'procedure_manipulation',
+                        #'suspicious_modifications',
+                        'high_market_concentration',  
+                        'temporal_clustering',
+                        #'excessive_subcontracting',
+                        #'short_contract_duration',
+                        'suspicious_buyer_supplier_pairs']
+        
+        # Clean training set
+        logger.info("Cleaning training set...")
+        X_train = anomaly_remover.clean_dataset(
+            X_train, 
+            anomaly_types=anomaly_types,
+            strict_threshold=True
+        )
+        
+        # Clean validation set  
+        logger.info("Cleaning validation set...")
+        X_val = anomaly_remover.clean_dataset(
+            X_val,
+            anomaly_types=['single_bid_competitive', 'price_inflation', 
+                          'price_deflation', 'high_market_concentration'],
+            strict_threshold=True
+        )
+
+        # Preprocess pipeline
+        numerical_columns = ['montant', 'dureeMois', 'offresRecues']
+
+        binary_columns = ['sousTraitanceDeclaree', 'origineFrance', 
+                          'marcheInnovant', 'idAccordCadre']
+        
+        categorical_columns = ['procedure', 'nature', 'formePrix', 'ccag',
+                               'typeGroupementOperateurs', 'tauxAvance_cat',
+                               'codeCPV_3']
+        
+        nodes_columns = ['acheteur_id', 'titulaire_id']
         
         preproc_pipeline = create_pipeline(numerical_columns, 
                                            binary_columns, 
@@ -109,17 +144,6 @@ class ProcurementGraphBuilder:
         X_test_copy = X_test.copy()
         # Reset index to avoid index mismatch issues
         X_test_copy = X_test_copy.reset_index(drop=True)
-
-        anomaly_types = ['single_bid_competitive', 
-                        'price_inflation',
-                        'price_deflation',
-                        'procedure_manipulation',
-                        'suspicious_modifications',
-                        'high_market_concentration',  
-                        'temporal_clustering',
-                        'excessive_subcontracting',
-                        'short_contract_duration',
-                        'suspicious_buyer_supplier_pairs']
 
         # Generate anomalies
         X_test_anomalies = generator.generate_anomalies(

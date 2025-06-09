@@ -97,49 +97,101 @@ class OriginalAnomalyAnalyzer:
     
     def _analyze_price_inflation(self, df: pd.DataFrame) -> Dict:
         """Analyze price inflation anomalies in original data."""
-        # Define inflation as top 2% of amounts
-        if 'montant' not in df.columns or df['montant'].isna().all():
+        # Define inflation as >3 standard deviations from mean per CPV category
+        required_cols = ['montant', 'codeCPV_3']
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            return {'count': 0, 'percentage': 0.0, 
+                    'error': f'Missing columns: {missing_cols}'}
+        
+        if df['montant'].isna().all():
             return {'count': 0, 'percentage': 0.0, 'error': 'No amount data'}
         
-        valid_amounts = df['montant'].dropna()
-        if len(valid_amounts) == 0:
-            return {'count': 0, 'percentage': 0.0, 'error': 'No valid amounts'}
+        # Filter to valid data
+        valid_data = df[df['montant'].notna() & df['codeCPV_3'].notna()].copy()
+        if len(valid_data) == 0:
+            return {'count': 0, 'percentage': 0.0, 'error': 'No valid amount/CPV data'}
         
-        # Use 98th percentile as threshold for "inflated" prices
-        inflation_threshold = np.percentile(valid_amounts, 98)
-        mask = (df['montant'] > inflation_threshold) & df['montant'].notna()
+        # Calculate statistics per CPV category
+        cpv_stats = valid_data.groupby('codeCPV_3')['montant'].agg(['mean', 'std', 'count']).reset_index()
+        cpv_stats = cpv_stats[cpv_stats['count'] >= 200]  # Need at least 200 contracts for reliable stats
         
-        count = np.sum(mask)
+        if len(cpv_stats) == 0:
+            return {'count': 0, 'percentage': 0.0, 'error': 'No CPV categories with sufficient data'}
+        
+        # Identify inflated contracts (>3 std dev from mean)
+        inflated_mask = pd.Series(False, index=df.index)
+        analyzed_categories = []
+        
+        for _, row in cpv_stats.iterrows():
+            cpv = row['codeCPV_3']
+            mean_amount = row['mean']
+            std_amount = row['std']
+            
+            if pd.notna(std_amount) and std_amount > 0:
+                threshold = mean_amount + (3 * std_amount)
+                cpv_mask = (df['codeCPV_3'] == cpv) & (df['montant'] > threshold) & df['montant'].notna()
+                inflated_mask |= cpv_mask
+                analyzed_categories.append(cpv)
+        
+        count = np.sum(inflated_mask)
         percentage = (count / len(df)) * 100
         
         return {
             'count': count,
             'percentage': percentage,
-            'description': f'Contracts above 98th percentile (>{inflation_threshold:,.0f})',
-            'threshold_used': f'montant > {inflation_threshold:,.0f}'
+            'description': f'Contracts >3 std dev above mean within CPV category ({len(analyzed_categories)} categories analyzed)',
+            'threshold_used': 'montant > mean + 3*std per codeCPV_3 category'
         }
     
     def _analyze_price_deflation(self, df: pd.DataFrame) -> Dict:
         """Analyze price deflation anomalies in original data."""
-        if 'montant' not in df.columns or df['montant'].isna().all():
+        # Define deflation as <3 standard deviations from mean per CPV category
+        required_cols = ['montant', 'codeCPV_3']
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            return {'count': 0, 'percentage': 0.0, 'error': f'Missing columns: {missing_cols}'}
+        
+        if df['montant'].isna().all():
             return {'count': 0, 'percentage': 0.0, 'error': 'No amount data'}
         
-        valid_amounts = df['montant'].dropna()
-        if len(valid_amounts) == 0:
-            return {'count': 0, 'percentage': 0.0, 'error': 'No valid amounts'}
+        # Filter to valid data
+        valid_data = df[df['montant'].notna() & df['codeCPV_3'].notna()].copy()
+        if len(valid_data) == 0:
+            return {'count': 0, 'percentage': 0.0, 'error': 'No valid amount/CPV data'}
         
-        # Use 2nd percentile as threshold for "deflated" prices
-        deflation_threshold = np.percentile(valid_amounts, 2)
-        mask = (df['montant'] < deflation_threshold) & df['montant'].notna()
+        # Calculate statistics per CPV category
+        cpv_stats = valid_data.groupby('codeCPV_3')['montant'].agg(['mean', 'std', 'count']).reset_index()
+        cpv_stats = cpv_stats[cpv_stats['count'] >= 200]  # Need at least 200 contracts for reliable stats
         
-        count = np.sum(mask)
+        if len(cpv_stats) == 0:
+            return {'count': 0, 'percentage': 0.0, 'error': 'No CPV categories with sufficient data'}
+        
+        # Identify deflated contracts (<3 std dev from mean)
+        deflated_mask = pd.Series(False, index=df.index)
+        analyzed_categories = []
+        
+        for _, row in cpv_stats.iterrows():
+            cpv = row['codeCPV_3']
+            mean_amount = row['mean']
+            std_amount = row['std']
+            
+            if pd.notna(std_amount) and std_amount > 0:
+                threshold = mean_amount - (3 * std_amount)
+                # Only consider positive thresholds to avoid negative amounts
+                threshold = max(threshold, 0)
+                cpv_mask = (df['codeCPV_3'] == cpv) & (df['montant'] < threshold) & (df['montant'] > 0) & df['montant'].notna()
+                deflated_mask |= cpv_mask
+                analyzed_categories.append(cpv)
+        
+        count = np.sum(deflated_mask)
         percentage = (count / len(df)) * 100
         
         return {
             'count': count,
             'percentage': percentage,
-            'description': f'Contracts below 2nd percentile (<{deflation_threshold:,.0f})',
-            'threshold_used': f'montant < {deflation_threshold:,.0f}'
+            'description': f'Contracts <3 std dev below mean within CPV category ({len(analyzed_categories)} categories analyzed)',
+            'threshold_used': 'montant < max(0, mean - 3*std) per codeCPV_3 category'
         }
     
     def _analyze_procedure_manipulation(self, df: pd.DataFrame) -> Dict:
@@ -232,23 +284,23 @@ class OriginalAnomalyAnalyzer:
         try:
             df_temp = df.copy()
             df_temp['date_parsed'] = pd.to_datetime(df_temp['dateNotification'], errors='coerce')
-            df_temp = df_temp.dropna(subset=['date_parsed', 'acheteur_id', 'titulaire_id'])
+            df_temp = df_temp.dropna(subset=['date_parsed', 'acheteur_id', 'titulaire_id', 'codeCPV_3'])
             
             if len(df_temp) == 0:
                 return {'count': 0, 'percentage': 0.0, 'error': 'No valid dates'}
             
-            # Group by buyer-supplier pairs
-            buyer_supplier_groups = df_temp.groupby(['acheteur_id', 'titulaire_id'])
+            # Group by buyer-supplier pairs with same CPV code
+            buyer_supplier_cpv_groups = df_temp.groupby(['acheteur_id', 'titulaire_id', 'codeCPV_3'])
             
             clustered_contracts = 0
-            for (buyer, supplier), group in buyer_supplier_groups:
-                if len(group) >= 3:  # Need at least 3 contracts to detect clustering
+            for (buyer, supplier, cpv), group in buyer_supplier_cpv_groups:
+                if len(group) >= 4:  # Need at least 4 contracts to detect clustering
                     dates = sorted(group['date_parsed'])
                     
-                    # Check for clustering: 3+ contracts within 30 days
-                    for i in range(len(dates) - 2):
-                        if (dates[i+2] - dates[i]).days <= 30:
-                            clustered_contracts += 3
+                    # Check for clustering: 4+ contracts within 30 days
+                    for i in range(len(dates) - 3):
+                        if (dates[i+3] - dates[i]).days <= 30:
+                            clustered_contracts += 4
                             break
             
             percentage = (clustered_contracts / len(df)) * 100
@@ -256,8 +308,8 @@ class OriginalAnomalyAnalyzer:
             return {
                 'count': clustered_contracts,
                 'percentage': percentage,
-                'description': 'Contracts in buyer-supplier pairs with 3+ contracts within 30 days',
-                'threshold_used': '3+ contracts within 30 days for same buyer-supplier pair'
+                'description': 'Contracts in buyer-supplier-CPV groups with 4+ contracts within 30 days',
+                'threshold_used': '4+ contracts within 30 days for same buyer-supplier-CPV combination'
             }
         except Exception as e:
             return {'count': 0, 'percentage': 0.0, 'error': f'Date parsing error: {str(e)}'}
@@ -456,6 +508,319 @@ def analyze_original_dataset_anomalies(df: pd.DataFrame) -> Dict:
     results = analyzer.analyze_all_anomaly_types(df)
     analyzer.print_analysis_summary(results)
     return results
+
+
+
+class OriginalAnomalyRemover:
+    """Enhanced analyzer to identify and remove original anomalies from data."""
+    
+    def __init__(self):
+        self.analyzer = OriginalAnomalyAnalyzer()
+        self.anomalous_indices = set()
+        
+    def identify_original_anomalies(self, df: pd.DataFrame, 
+                                   anomaly_types: List[str] = None,
+                                   strict_threshold: bool = True) -> set:
+        """Identify indices of rows that contain original anomalies.
+        
+        Args:
+            df: DataFrame to analyze
+            anomaly_types: List of anomaly types to check for
+            strict_threshold: If True, use stricter thresholds for detection
+            
+        Returns:
+            Set of indices of anomalous rows to remove
+        """
+        if anomaly_types is None:
+            anomaly_types = [
+                'single_bid_competitive',
+                'price_inflation', 
+                'price_deflation',
+                'high_market_concentration',
+                'temporal_clustering',
+                'suspicious_buyer_supplier_pairs'
+            ]
+        
+        logger.info("Identifying original anomalies for removal...")
+        logger.info(f"Checking for: {', '.join(anomaly_types)}")
+        
+        anomalous_indices = set()
+        
+        for anomaly_type in anomaly_types:
+            try:
+                indices = self._get_anomaly_indices(df, anomaly_type, 
+                                                    strict_threshold)
+                anomalous_indices.update(indices)
+                logger.info(f"{anomaly_type}: found {len(indices)} anomalies")
+            except Exception as e:
+                logger.warning(f"Failed to analyze {anomaly_type}: {str(e)}")
+                
+        logger.info(f"Total unique anomalous rows identified: "
+                    f"{len(anomalous_indices)} "
+                    f"({len(anomalous_indices)/len(df)*100:.2f}%)")
+        
+        self.anomalous_indices = anomalous_indices
+        return anomalous_indices
+    
+    def _get_anomaly_indices(self, df: pd.DataFrame, anomaly_type: str,
+                             strict_threshold: bool = True) -> set:
+        """Get indices of specific anomaly type."""
+        
+        if anomaly_type == 'single_bid_competitive':
+            return self._get_single_bid_indices(df, strict_threshold)
+        elif anomaly_type == 'price_inflation':
+            return self._get_price_inflation_indices(df, strict_threshold)
+        elif anomaly_type == 'price_deflation':
+            return self._get_price_deflation_indices(df, strict_threshold)
+        elif anomaly_type == 'high_market_concentration':
+            return self._get_market_concentration_indices(df, strict_threshold)
+        elif anomaly_type == 'temporal_clustering':
+            return self._get_temporal_clustering_indices(df, strict_threshold)
+        elif anomaly_type == 'suspicious_buyer_supplier_pairs':
+            return self._get_suspicious_pairs_indices(df, strict_threshold)
+        else:
+            return set()
+    
+    def _get_single_bid_indices(self, df: pd.DataFrame, 
+                                strict: bool = True) -> set:
+        """Get indices of single bid competitive anomalies."""
+        competitive_procedures = ["Appel d'offres ouvert", 
+                                  "Appel d'offres restreint"]
+        
+        mask = (df['procedure'].isin(competitive_procedures) & 
+                (df['offresRecues'] == 1) & 
+                df['offresRecues'].notna())
+        
+        return set(df[mask].index.tolist())
+    
+    def _get_price_inflation_indices(self, df: pd.DataFrame, 
+                                     strict: bool = True) -> set:
+        """Get indices of price inflation anomalies."""
+        required_cols = ['montant', 'codeCPV_3']
+        if not all(col in df.columns for col in required_cols):
+            return set()
+        
+        valid_data = df[df['montant'].notna() & df['codeCPV_3'].notna()]
+        if len(valid_data) == 0:
+            return set()
+        
+        cpv_stats = (valid_data.groupby('codeCPV_3')['montant']
+                     .agg(['mean', 'std', 'count']).reset_index())
+        
+        # Use same thresholds as _analyze_price_inflation
+        cpv_stats = cpv_stats[cpv_stats['count'] >= 200]
+        
+        inflated_mask = pd.Series(False, index=df.index)
+        
+        for _, row in cpv_stats.iterrows():
+            cpv = row['codeCPV_3']
+            mean_amount = row['mean']
+            std_amount = row['std']
+            
+            if pd.notna(std_amount) and std_amount > 0:
+                threshold = mean_amount + (3 * std_amount)
+                cpv_mask = ((df['codeCPV_3'] == cpv) & 
+                            (df['montant'] > threshold) & 
+                            df['montant'].notna())
+                inflated_mask |= cpv_mask
+        
+        return set(df[inflated_mask].index.tolist())
+    
+    def _get_price_deflation_indices(self, df: pd.DataFrame, 
+                                     strict: bool = True) -> set:
+        """Get indices of price deflation anomalies."""
+        required_cols = ['montant', 'codeCPV_3']
+        if not all(col in df.columns for col in required_cols):
+            return set()
+        
+        valid_data = df[df['montant'].notna() & df['codeCPV_3'].notna()]
+        if len(valid_data) == 0:
+            return set()
+        
+        cpv_stats = (valid_data.groupby('codeCPV_3')['montant']
+                     .agg(['mean', 'std', 'count']).reset_index())
+        
+        # Use same thresholds as _analyze_price_deflation
+        cpv_stats = cpv_stats[cpv_stats['count'] >= 200]
+        
+        deflated_mask = pd.Series(False, index=df.index)
+        
+        for _, row in cpv_stats.iterrows():
+            cpv = row['codeCPV_3']
+            mean_amount = row['mean']
+            std_amount = row['std']
+            
+            if pd.notna(std_amount) and std_amount > 0:
+                threshold = mean_amount - (3 * std_amount)
+                threshold = max(threshold, 0)  # Only consider positive thresholds
+                cpv_mask = ((df['codeCPV_3'] == cpv) & 
+                            (df['montant'] < threshold) & 
+                            (df['montant'] > 0) &  # Exclude zero amounts
+                            df['montant'].notna())
+                deflated_mask |= cpv_mask
+        
+        return set(df[deflated_mask].index.tolist())
+    
+    def _get_market_concentration_indices(self, df: pd.DataFrame, 
+                                          strict: bool = True) -> set:
+        """Get indices of high market concentration anomalies."""
+        required_cols = ['acheteur_id', 'titulaire_id', 'codeCPV_3']
+        if not all(col in df.columns for col in required_cols):
+            return set()
+        
+        # Calculate market concentration per buyer-CPV combination
+        concentration_threshold = 0.8 if strict else 0.7
+        min_contracts = 10 if strict else 5
+        
+        concentration_mask = pd.Series(False, index=df.index)
+        
+        # Group by buyer and CPV category
+        buyer_cpv_groups = df.groupby(['acheteur_id', 'codeCPV_3'])
+        
+        for (buyer, cpv), group in buyer_cpv_groups:
+            if len(group) >= min_contracts:
+                # Calculate supplier concentration (Herfindahl index)
+                supplier_counts = group['titulaire_id'].value_counts()
+                total_contracts = len(group)
+                
+                # Calculate concentration ratio for top supplier
+                top_supplier_ratio = supplier_counts.iloc[0] / total_contracts
+                
+                if top_supplier_ratio >= concentration_threshold:
+                    concentration_mask.loc[group.index] = True
+        
+        return set(df[concentration_mask].index.tolist())
+    
+    def _get_temporal_clustering_indices(self, df: pd.DataFrame, 
+                                         strict: bool = True) -> set:
+        """Get indices of temporal clustering anomalies."""
+        if 'dateNotification' not in df.columns:
+            return set()
+        
+        # Convert date column
+        try:
+            df_temp = df.copy()
+            df_temp['date'] = pd.to_datetime(df_temp['dateNotification'], 
+                                             errors='coerce')
+            valid_dates = df_temp['date'].notna()
+            df_temp = df_temp[valid_dates]
+        except:
+            return set()
+        
+        if len(df_temp) == 0:
+            return set()
+        
+        clustering_indices = set()
+        window_days = 15 if strict else 30
+        min_cluster_size = 5 if strict else 3
+        
+        # Group by buyer-supplier-CPV combinations
+        group_cols = ['acheteur_id', 'titulaire_id', 'codeCPV_3']
+        if all(col in df_temp.columns for col in group_cols):
+            
+            for group_keys, group in df_temp.groupby(group_cols):
+                if len(group) >= min_cluster_size:
+                    # Sort by date
+                    group_sorted = group.sort_values('date')
+                    dates = group_sorted['date'].dt.date.tolist()
+                    
+                    # Find clusters of contracts within window_days
+                    for i in range(len(dates) - min_cluster_size + 1):
+                        window_end_date = dates[i] + timedelta(days=window_days)
+                        
+                        # Count contracts in window
+                        contracts_in_window = sum(1 for d in dates[i:] 
+                                                  if d <= window_end_date)
+                        
+                        if contracts_in_window >= min_cluster_size:
+                            # Add indices of contracts in this cluster
+                            cluster_indices = []
+                            for j, date in enumerate(dates[i:], i):
+                                if date <= window_end_date:
+                                    cluster_indices.append(
+                                        group_sorted.iloc[j].name)
+                                else:
+                                    break
+                            clustering_indices.update(cluster_indices)
+        
+        return clustering_indices
+    
+    def _get_suspicious_pairs_indices(self, df: pd.DataFrame, 
+                                      strict: bool = True) -> set:
+        """Get indices of suspicious buyer-supplier pairs."""
+        required_cols = ['acheteur_id', 'titulaire_id']
+        if not all(col in df.columns for col in required_cols):
+            return set()
+        
+        suspicious_indices = set()
+        
+        # Calculate contract frequency between buyer-supplier pairs
+        pair_counts = (df.groupby(['acheteur_id', 'titulaire_id'])
+                       .size().reset_index(name='contract_count'))
+        
+        # Thresholds for suspicious activity
+        min_contracts = 20 if strict else 10
+        
+        # Flag pairs with very high contract frequency
+        high_frequency_pairs = pair_counts[
+            pair_counts['contract_count'] >= min_contracts]
+        
+        for _, row in high_frequency_pairs.iterrows():
+            buyer = row['acheteur_id']
+            supplier = row['titulaire_id']
+            
+            # Get all contracts for this pair
+            pair_mask = ((df['acheteur_id'] == buyer) & 
+                         (df['titulaire_id'] == supplier))
+            pair_indices = df[pair_mask].index.tolist()
+            
+            # Additional checks for strict mode
+            if strict and len(pair_indices) >= min_contracts:
+                pair_data = df.loc[pair_indices]
+                
+                # Check if amounts are very similar (potential price fixing)
+                if 'montant' in df.columns:
+                    amounts = pair_data['montant'].dropna()
+                    if len(amounts) > 1:
+                        cv = amounts.std() / amounts.mean() if amounts.mean() > 0 else 1
+                        if cv < 0.1:  # Very low coefficient of variation
+                            suspicious_indices.update(pair_indices)
+                else:
+                    suspicious_indices.update(pair_indices)
+            else:
+                suspicious_indices.update(pair_indices)
+        
+        return suspicious_indices
+    
+    def clean_dataset(self, df: pd.DataFrame, 
+                     anomaly_types: List[str] = None,
+                     strict_threshold: bool = True) -> pd.DataFrame:
+        """Remove identified anomalies from dataset.
+        
+        Args:
+            df: DataFrame to clean
+            anomaly_types: List of anomaly types to remove
+            strict_threshold: Use strict detection thresholds
+            
+        Returns:
+            Cleaned DataFrame with anomalies removed
+        """
+        anomalous_indices = self.identify_original_anomalies(
+            df, anomaly_types, strict_threshold)
+        
+        if len(anomalous_indices) == 0:
+            logger.info("No original anomalies found to remove")
+            return df.copy()
+        
+        # Remove anomalous rows
+        df_clean = df.drop(index=anomalous_indices).copy()
+        
+        logger.info(f"Removed {len(anomalous_indices)} anomalous rows "
+                   f"({len(anomalous_indices)/len(df)*100:.2f}%)")
+        logger.info(f"Clean dataset: {len(df_clean)} rows "
+                   f"(was {len(df)} rows)")
+        
+        return df_clean
 
 
 
@@ -775,35 +1140,76 @@ class SyntheticAnomalyGenerator:
                                               List[Dict], List[int]]:
         """Generate new rows with artificially inflated prices.
         
+        Uses the same logic as OriginalAnomalyAnalyzer: inflates prices to be
+        >3 standard deviations above the mean within CPV categories.
+        
         Returns:
             Tuple of (new_rows, template_indices)
         """
         
-        # Find contracts with valid amounts as templates
-        mask = df['montant'].notna() & (df['montant'] > 0)
-        eligible_rows = df[mask]
-        
-        if len(eligible_rows) == 0:
-            logger.warning("No eligible contracts found for price inflation "
-                          "anomalies")
+        # Check required columns
+        required_cols = ['montant', 'codeCPV_3']
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            logger.warning(f"Missing columns for price inflation: {missing_cols}")
             return [], []
         
-        # Select random template rows
-        selected_rows = eligible_rows.sample(
-            n=min(n_anomalies, len(eligible_rows)), 
-            random_state=self.random_seed)
+        if df['montant'].isna().all():
+            logger.warning("No amount data for price inflation anomalies")
+            return [], []
+        
+        # Filter to valid data
+        valid_data = df[df['montant'].notna() & df['codeCPV_3'].notna() & 
+                       (df['montant'] > 0)].copy()
+        if len(valid_data) == 0:
+            logger.warning("No valid amount/CPV data for price inflation")
+            return [], []
+        
+        # Calculate statistics per CPV category
+        cpv_stats = valid_data.groupby('codeCPV_3')['montant'].agg(
+            ['mean', 'std', 'count']).reset_index()
+        cpv_stats = cpv_stats[cpv_stats['count'] >= 200]  # Need at least 200 contracts for reliable stats
+        
+        if len(cpv_stats) == 0:
+            logger.warning("No CPV categories with sufficient data for price inflation")
+            return [], []
+        
+        # Select contracts from categories with valid statistics
+        eligible_contracts = []
+        for _, cpv_row in cpv_stats.iterrows():
+            cpv = cpv_row['codeCPV_3']
+            mean_amount = cpv_row['mean']
+            std_amount = cpv_row['std']
+            
+            if pd.notna(std_amount) and std_amount > 0:
+                # Find contracts in this CPV category that are below the inflation threshold
+                cpv_contracts = valid_data[valid_data['codeCPV_3'] == cpv]
+                inflation_threshold = mean_amount + (3 * std_amount)
+                
+                # Select contracts that are currently below the threshold
+                below_threshold = cpv_contracts[cpv_contracts['montant'] < inflation_threshold]
+                for idx, contract in below_threshold.iterrows():
+                    eligible_contracts.append((idx, contract, mean_amount, std_amount))
+        
+        if len(eligible_contracts) == 0:
+            logger.warning("No eligible contracts found for price inflation anomalies")
+            return [], []
+        
+        # Randomly select contracts to inflate
+        selected_contracts = random.sample(
+            eligible_contracts, 
+            min(n_anomalies, len(eligible_contracts)))
         
         new_rows = []
         template_indices = []
         
-        for idx, row in selected_rows.iterrows():
-            # Create new anomalous row based on template
-            new_row = row.copy()
-            original_amount = new_row['montant']
+        for idx, contract, mean_amount, std_amount in selected_contracts:
+            new_row = contract.copy()
             
-            # Inflate by 200-500%
-            multiplier = random.uniform(3.0, 6.0)
-            new_row['montant'] = original_amount * multiplier
+            # Inflate to be >3 std dev above mean (add some randomness)
+            inflation_threshold = mean_amount + (3 * std_amount)
+            multiplier = random.uniform(1.1, 1.5)  # 10-50% above threshold
+            new_row['montant'] = inflation_threshold * multiplier
             
             # Add anomaly metadata
             new_row['anomaly_type'] = anomaly_type
@@ -821,35 +1227,81 @@ class SyntheticAnomalyGenerator:
                                               List[Dict], List[int]]:
         """Generate new rows with artificially deflated prices.
         
+        Uses the same logic as OriginalAnomalyAnalyzer: deflates prices to be
+        <3 standard deviations below the mean within CPV categories.
+        
         Returns:
             Tuple of (new_rows, template_indices)
         """
         
-        # Find contracts with valid amounts as templates
-        mask = df['montant'].notna() & (df['montant'] > 0)
-        eligible_rows = df[mask]
-        
-        if len(eligible_rows) == 0:
-            logger.warning("No eligible contracts found for price deflation "
-                          "anomalies")
+        # Check required columns
+        required_cols = ['montant', 'codeCPV_3']
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            logger.warning(f"Missing columns for price deflation: {missing_cols}")
             return [], []
         
-        # Select random template rows
-        selected_rows = eligible_rows.sample(
-            n=min(n_anomalies, len(eligible_rows)), 
-            random_state=self.random_seed)
+        if df['montant'].isna().all():
+            logger.warning("No amount data for price deflation anomalies")
+            return [], []
+        
+        # Filter to valid data
+        valid_data = df[df['montant'].notna() & df['codeCPV_3'].notna() & 
+                       (df['montant'] > 0)].copy()
+        if len(valid_data) == 0:
+            logger.warning("No valid amount/CPV data for price deflation")
+            return [], []
+        
+        # Calculate statistics per CPV category
+        cpv_stats = valid_data.groupby('codeCPV_3')['montant'].agg(
+            ['mean', 'std', 'count']).reset_index()
+        cpv_stats = cpv_stats[cpv_stats['count'] >= 200]  # Need at least 200 contracts for reliable stats
+        
+        if len(cpv_stats) == 0:
+            logger.warning("No CPV categories with sufficient data for price deflation")
+            return [], []
+        
+        # Select contracts from categories with valid statistics
+        eligible_contracts = []
+        for _, cpv_row in cpv_stats.iterrows():
+            cpv = cpv_row['codeCPV_3']
+            mean_amount = cpv_row['mean']
+            std_amount = cpv_row['std']
+            
+            if pd.notna(std_amount) and std_amount > 0:
+                # Find contracts in this CPV category that are above the deflation threshold
+                cpv_contracts = valid_data[valid_data['codeCPV_3'] == cpv]
+                deflation_threshold = max(mean_amount - (3 * std_amount), 0)
+                
+                # Select contracts that are currently above the threshold
+                above_threshold = cpv_contracts[cpv_contracts['montant'] > deflation_threshold]
+                for idx, contract in above_threshold.iterrows():
+                    eligible_contracts.append((idx, contract, mean_amount, std_amount))
+        
+        if len(eligible_contracts) == 0:
+            logger.warning("No eligible contracts found for price deflation anomalies")
+            return [], []
+        
+        # Randomly select contracts to deflate
+        selected_contracts = random.sample(
+            eligible_contracts, 
+            min(n_anomalies, len(eligible_contracts)))
         
         new_rows = []
         template_indices = []
         
-        for idx, row in selected_rows.iterrows():
-            # Create new anomalous row based on template
-            new_row = row.copy()
-            original_amount = new_row['montant']
+        for idx, contract, mean_amount, std_amount in selected_contracts:
+            new_row = contract.copy()
             
-            # Deflate to 10-30% of original
-            multiplier = random.uniform(0.1, 0.3)
-            new_row['montant'] = original_amount * multiplier
+            # Deflate to be <3 std dev below mean (add some randomness)
+            deflation_threshold = max(mean_amount - (3 * std_amount), 0)
+            # Ensure we don't go negative and add some randomness below threshold
+            if deflation_threshold > 0:
+                multiplier = random.uniform(0.5, 0.9)  # 50-90% of threshold
+                new_row['montant'] = deflation_threshold * multiplier
+            else:
+                # If threshold is 0, use a small positive value
+                new_row['montant'] = mean_amount * random.uniform(0.01, 0.05)
             
             # Add anomaly metadata
             new_row['anomaly_type'] = anomaly_type
@@ -1024,61 +1476,98 @@ class SyntheticAnomalyGenerator:
                                                     List[Dict], List[int]]:
         """Generate new rows with suspicious temporal clustering patterns.
         
+        Uses the same logic as OriginalAnomalyAnalyzer: creates clusters of 4+
+        contracts within 30 days for the same buyer-supplier-CPV combination.
+        
         Returns:
             Tuple of (new_rows, template_indices)
         """
         
-        # Find buyer-supplier pairs with multiple contracts as templates
-        buyer_supplier_pairs = df.groupby(['acheteur_id', 
-                                          'titulaire_id']).size()
-        eligible_pairs = buyer_supplier_pairs[
-            buyer_supplier_pairs >= 3].index.tolist()
-        
-        if len(eligible_pairs) == 0:
-            logger.warning("No eligible buyer-supplier pairs found for "
-                          "temporal clustering anomalies")
+        # Check for required columns
+        if 'dateNotification' not in df.columns:
+            logger.warning("No date data for temporal clustering anomalies")
             return [], []
         
-        # Select pairs to create clustered contracts from
-        selected_pairs = random.sample(
-            eligible_pairs,
-            min(len(eligible_pairs), n_anomalies // 3))
-        
-        new_rows = []
-        template_indices = []
-        
-        for buyer_id, supplier_id in selected_pairs:
-            pair_contracts = df[(df['acheteur_id'] == buyer_id) & 
-                              (df['titulaire_id'] == supplier_id)]
+        # Convert dates and filter to valid data
+        try:
+            df_temp = df.copy()
+            df_temp['date_parsed'] = pd.to_datetime(
+                df_temp['dateNotification'], errors='coerce')
+            df_temp = df_temp.dropna(subset=['date_parsed', 'acheteur_id', 
+                                           'titulaire_id', 'codeCPV_3'])
             
-            # Pick template contracts and create clustered ones
-            template_contracts = pair_contracts.sample(
-                n=min(3, len(pair_contracts)), 
-                random_state=self.random_seed)
+            if len(df_temp) == 0:
+                logger.warning("No valid dates for temporal clustering anomalies")
+                return [], []
             
-            # Pick a random date and cluster contracts around it
-            base_date = datetime(2023, random.randint(1, 12), 
-                               random.randint(1, 28))
+            # Find buyer-supplier-CPV combinations with multiple contracts
+            buyer_supplier_cpv_groups = df_temp.groupby(['acheteur_id', 
+                                                        'titulaire_id', 
+                                                        'codeCPV_3'])
             
-            for i, (idx, row) in enumerate(template_contracts.iterrows()):
-                new_row = row.copy()
+            eligible_groups = []
+            for (buyer_id, supplier_id, cpv), group in buyer_supplier_cpv_groups:
+                if len(group) >= 2:  # Need at least 2 to create cluster of 4
+                    eligible_groups.append((buyer_id, supplier_id, cpv, group))
+            
+            if len(eligible_groups) == 0:
+                logger.warning("No eligible buyer-supplier-CPV groups found for "
+                              "temporal clustering anomalies")
+                return [], []
+            
+            # Select groups to create clustered contracts from
+            selected_groups = random.sample(
+                eligible_groups,
+                min(len(eligible_groups), max(1, n_anomalies // 4)))
+            
+            new_rows = []
+            template_indices = []
+            
+            for buyer_id, supplier_id, cpv, group in selected_groups:
+                # Pick template contracts (at least 4 for proper clustering)
+                n_contracts_to_create = 4
+                if len(group) < n_contracts_to_create:
+                    # If not enough templates, duplicate some
+                    template_contracts = group.sample(
+                        n=len(group), random_state=self.random_seed)
+                    # Repeat templates to get 4 contracts
+                    template_list = list(template_contracts.iterrows())
+                    while len(template_list) < n_contracts_to_create:
+                        template_list.extend(list(template_contracts.iterrows()))
+                    template_contracts = template_list[:n_contracts_to_create]
+                else:
+                    template_contracts = list(group.sample(
+                        n=n_contracts_to_create, 
+                        random_state=self.random_seed).iterrows())
                 
-                # Create clustered date (within 2 weeks of each other)
-                clustered_date = base_date + timedelta(
-                    days=random.randint(0, 14))
-                new_row['dateNotification'] = clustered_date.strftime(
-                    '%Y-%m-%d')
+                # Pick a random base date and cluster contracts within 30 days
+                base_date = datetime(2023, random.randint(1, 12), 
+                                   random.randint(1, 28))
                 
-                # Add anomaly metadata
-                new_row['anomaly_type'] = anomaly_type
-                new_row['source_type'] = 'synthetic'
-                
-                new_rows.append(new_row.to_dict())
-                template_indices.append(idx)
-        
-        logger.info(f"Generated {len(new_rows)} temporal clustering "
-                   "anomaly rows")
-        return new_rows, template_indices
+                for i, (idx, row) in enumerate(template_contracts):
+                    new_row = row.copy()
+                    
+                    # Create clustered date (within 30 days, like analyzer)
+                    # Ensure all 4+ contracts are within 30 days of first one
+                    clustered_date = base_date + timedelta(
+                        days=random.randint(0, 29))  # 0-29 days = within 30 days
+                    new_row['dateNotification'] = clustered_date.strftime(
+                        '%Y-%m-%d')
+                    
+                    # Add anomaly metadata
+                    new_row['anomaly_type'] = anomaly_type
+                    new_row['source_type'] = 'synthetic'
+                    
+                    new_rows.append(new_row.to_dict())
+                    template_indices.append(idx)
+            
+            logger.info(f"Generated {len(new_rows)} temporal clustering "
+                       "anomaly rows")
+            return new_rows, template_indices
+            
+        except Exception as e:
+            logger.error(f"Error generating temporal clustering anomalies: {str(e)}")
+            return [], []
     
     def _generate_excessive_subcontracting_anomalies(self, df: pd.DataFrame, 
                                                       n_anomalies: int, 
