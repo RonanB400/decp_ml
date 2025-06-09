@@ -356,8 +356,18 @@ class OriginalAnomalyAnalyzer:
         # Calculate total amounts per buyer-supplier pair
         pair_totals = df.groupby(['acheteur_id', 'titulaire_id'])['montant'].agg(['sum', 'count'])
         
-        # Define suspicious as top 1% of total amounts with 2+ contracts
-        suspicious_threshold = np.percentile(pair_totals['sum'].dropna(), 99)
+        # Define suspicious as mean + 2 standard deviations of total amounts with 2+ contracts
+        pair_sums = pair_totals['sum'].dropna()
+        if len(pair_sums) == 0:
+            return {'count': 0, 'percentage': 0.0, 'error': 'No valid pair amounts'}
+        
+        mean_amount = pair_sums.mean()
+        std_amount = pair_sums.std()
+        
+        if pd.isna(std_amount) or std_amount == 0:
+            return {'count': 0, 'percentage': 0.0, 'error': 'Cannot calculate standard deviation'}
+        
+        suspicious_threshold = mean_amount + (2 * std_amount)
         suspicious_pairs = pair_totals[(pair_totals['sum'] > suspicious_threshold) & 
                                      (pair_totals['count'] >= 2)]
         
@@ -372,8 +382,8 @@ class OriginalAnomalyAnalyzer:
         return {
             'count': count,
             'percentage': percentage,
-            'description': f'Contracts in buyer-supplier pairs with total amount >{suspicious_threshold:,.0f}',
-            'threshold_used': f'total_pair_amount > {suspicious_threshold:,.0f} AND contract_count >= 2'
+            'description': f'Contracts in buyer-supplier pairs with total amount >{suspicious_threshold:,.0f} (mean + 2σ)',
+            'threshold_used': f'total_pair_amount > {mean_amount:,.0f} + 2*{std_amount:,.0f} AND contract_count >= 2'
         }
     
     def print_analysis_summary(self, results: Dict = None):
@@ -668,28 +678,28 @@ class OriginalAnomalyRemover:
         if not all(col in df.columns for col in required_cols):
             return set()
         
-        # Calculate market concentration per buyer-CPV combination
-        concentration_threshold = 0.8 if strict else 0.7
-        min_contracts = 10 if strict else 5
+        # Use same logic as _analyze_high_market_concentration
+        buyer_cpv_supplier_counts = df.groupby(['acheteur_id', 'codeCPV_3', 'titulaire_id']).size()
+        buyer_cpv_total_counts = df.groupby(['acheteur_id', 'codeCPV_3']).size()
         
-        concentration_mask = pd.Series(False, index=df.index)
+        # Calculate supplier market share within each buyer-CPV combination
+        supplier_shares = buyer_cpv_supplier_counts / buyer_cpv_total_counts
         
-        # Group by buyer and CPV category
-        buyer_cpv_groups = df.groupby(['acheteur_id', 'codeCPV_3'])
+        # Find cases where supplier has >70% market share and >2 total contracts
+        high_concentration_mask = (supplier_shares > 0.7) & (buyer_cpv_total_counts > 2)
         
-        for (buyer, cpv), group in buyer_cpv_groups:
-            if len(group) >= min_contracts:
-                # Calculate supplier concentration (Herfindahl index)
-                supplier_counts = group['titulaire_id'].value_counts()
-                total_contracts = len(group)
-                
-                # Calculate concentration ratio for top supplier
-                top_supplier_ratio = supplier_counts.iloc[0] / total_contracts
-                
-                if top_supplier_ratio >= concentration_threshold:
-                    concentration_mask.loc[group.index] = True
+        # Get the high-concentration combinations
+        high_concentration_combinations = high_concentration_mask[high_concentration_mask].index
         
-        return set(df[concentration_mask].index.tolist())
+        # Collect indices of contracts in these high-concentration scenarios
+        concentration_indices = set()
+        for (buyer, cpv, supplier) in high_concentration_combinations:
+            mask = ((df['acheteur_id'] == buyer) & 
+                   (df['codeCPV_3'] == cpv) & 
+                   (df['titulaire_id'] == supplier))
+            concentration_indices.update(df[mask].index.tolist())
+        
+        return concentration_indices
     
     def _get_temporal_clustering_indices(self, df: pd.DataFrame, 
                                          strict: bool = True) -> set:
@@ -748,47 +758,39 @@ class OriginalAnomalyRemover:
     def _get_suspicious_pairs_indices(self, df: pd.DataFrame, 
                                       strict: bool = True) -> set:
         """Get indices of suspicious buyer-supplier pairs."""
-        required_cols = ['acheteur_id', 'titulaire_id']
+        required_cols = ['acheteur_id', 'titulaire_id', 'montant']
         if not all(col in df.columns for col in required_cols):
             return set()
         
+        if df['montant'].isna().all():
+            return set()
+        
+        # Calculate total amounts per buyer-supplier pair
+        pair_totals = df.groupby(['acheteur_id', 'titulaire_id'])['montant'].agg(['sum', 'count'])
+        
+        # Use mean + 2 standard deviations of total amounts with 2+ contracts
+        pair_sums = pair_totals['sum'].dropna()
+        if len(pair_sums) == 0:
+            return set()
+        
+        mean_amount = pair_sums.mean()
+        std_amount = pair_sums.std()
+        
+        if pd.isna(std_amount) or std_amount == 0:
+            return set()
+        
+        # For strict mode, use 2 std dev; for non-strict, use 1.5 std dev
+        multiplier = 2.0 if strict else 1.5
+        suspicious_threshold = mean_amount + (multiplier * std_amount)
+        suspicious_pairs = pair_totals[(pair_totals['sum'] > suspicious_threshold) & 
+                                     (pair_totals['count'] >= 2)]
+        
+        # Collect indices of contracts in suspicious pairs
         suspicious_indices = set()
-        
-        # Calculate contract frequency between buyer-supplier pairs
-        pair_counts = (df.groupby(['acheteur_id', 'titulaire_id'])
-                       .size().reset_index(name='contract_count'))
-        
-        # Thresholds for suspicious activity
-        min_contracts = 20 if strict else 10
-        
-        # Flag pairs with very high contract frequency
-        high_frequency_pairs = pair_counts[
-            pair_counts['contract_count'] >= min_contracts]
-        
-        for _, row in high_frequency_pairs.iterrows():
-            buyer = row['acheteur_id']
-            supplier = row['titulaire_id']
-            
-            # Get all contracts for this pair
+        for (buyer, supplier), _ in suspicious_pairs.iterrows():
             pair_mask = ((df['acheteur_id'] == buyer) & 
                          (df['titulaire_id'] == supplier))
-            pair_indices = df[pair_mask].index.tolist()
-            
-            # Additional checks for strict mode
-            if strict and len(pair_indices) >= min_contracts:
-                pair_data = df.loc[pair_indices]
-                
-                # Check if amounts are very similar (potential price fixing)
-                if 'montant' in df.columns:
-                    amounts = pair_data['montant'].dropna()
-                    if len(amounts) > 1:
-                        cv = amounts.std() / amounts.mean() if amounts.mean() > 0 else 1
-                        if cv < 0.1:  # Very low coefficient of variation
-                            suspicious_indices.update(pair_indices)
-                else:
-                    suspicious_indices.update(pair_indices)
-            else:
-                suspicious_indices.update(pair_indices)
+            suspicious_indices.update(df[pair_mask].index.tolist())
         
         return suspicious_indices
     
@@ -1666,44 +1668,72 @@ class SyntheticAnomalyGenerator:
                                                  List[Dict], List[int]]:
         """Generate new rows with suspicious buyer-supplier relationship patterns.
         
+        Creates anomalies by inflating contract amounts for buyer-supplier pairs
+        to exceed mean + 2 standard deviations of total pair amounts.
+        
         Returns:
             Tuple of (new_rows, template_indices)
         """
         
-        # Find buyer-supplier pairs with multiple contracts and valid amounts
-        buyer_supplier_amounts = df.groupby(['acheteur_id', 'titulaire_id']).agg({
-            'montant': ['sum', 'count']
-        }).reset_index()
-        buyer_supplier_amounts.columns = ['acheteur_id', 'titulaire_id', 
-                                         'sum_montant', 'count_contracts']
-        
-        # Filter for pairs with at least 2 contracts and valid amounts
-        eligible_pairs = buyer_supplier_amounts[
-            (buyer_supplier_amounts['count_contracts'] >= 2) & 
-            (buyer_supplier_amounts['sum_montant'].notna()) &
-            (buyer_supplier_amounts['sum_montant'] > 0)
-        ]
-        
-        if len(eligible_pairs) == 0:
-            logger.warning("No eligible buyer-supplier pairs found for "
-                          "suspicious pairs anomalies")
+        # Check required columns
+        required_cols = ['acheteur_id', 'titulaire_id', 'montant']
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            logger.warning(f"Missing columns for suspicious pairs: {missing_cols}")
             return [], []
         
-        # Select pairs to create suspicious relationships from
-        selected_pairs = eligible_pairs.sample(
-            min(len(eligible_pairs), n_anomalies // 2), 
+        if df['montant'].isna().all():
+            logger.warning("No amount data for suspicious pairs anomalies")
+            return [], []
+        
+        # Calculate current pair totals to determine target threshold
+        pair_totals = df.groupby(['acheteur_id', 'titulaire_id'])['montant'].agg(['sum', 'count'])
+        pair_sums = pair_totals['sum'].dropna()
+        
+        if len(pair_sums) == 0:
+            logger.warning("No valid pair amounts for suspicious pairs anomalies")
+            return [], []
+        
+        mean_amount = pair_sums.mean()
+        std_amount = pair_sums.std()
+        
+        if pd.isna(std_amount) or std_amount == 0:
+            logger.warning("Cannot calculate standard deviation for suspicious pairs")
+            return [], []
+        
+        # Target threshold for suspicious pairs
+        suspicious_threshold = mean_amount + (2 * std_amount)
+        
+        # Find pairs that are currently below the threshold
+        below_threshold_pairs = pair_totals[
+            (pair_totals['sum'] < suspicious_threshold) & 
+            (pair_totals['count'] >= 2) &
+            (pair_totals['sum'].notna()) &
+            (pair_totals['sum'] > 0)
+        ]
+        
+        if len(below_threshold_pairs) == 0:
+            logger.warning("No eligible pairs below threshold for suspicious pairs anomalies")
+            return [], []
+        
+        # Select pairs to make suspicious
+        selected_pairs = below_threshold_pairs.sample(
+            min(len(below_threshold_pairs), n_anomalies // 2), 
             random_state=self.random_seed)
         
         new_rows = []
         template_indices = []
         
-        for _, row in selected_pairs.iterrows():
-            buyer_id = row['acheteur_id']
-            supplier_id = row['titulaire_id']
+        for (buyer_id, supplier_id), pair_info in selected_pairs.iterrows():
+            current_total = pair_info['sum']
             
             # Find contracts for this pair as templates
             pair_contracts = df[(df['acheteur_id'] == buyer_id) & 
                               (df['titulaire_id'] == supplier_id)]
+            
+            # Calculate how much we need to inflate to exceed threshold
+            target_total = suspicious_threshold * random.uniform(1.1, 1.4)  # 10-40% above threshold
+            inflation_factor = target_total / current_total
             
             # Create new contracts with inflated amounts for this pair
             template_contracts = pair_contracts.sample(
@@ -1713,10 +1743,10 @@ class SyntheticAnomalyGenerator:
             for idx, template_row in template_contracts.iterrows():
                 new_row = template_row.copy()
                 
-                # Make it anomalous: inflate the amount significantly
+                # Make it anomalous: inflate to reach target threshold
                 original_amount = new_row['montant']
                 if pd.notna(original_amount) and original_amount > 0:
-                    new_row['montant'] = original_amount * random.uniform(1.5, 3.0)
+                    new_row['montant'] = original_amount * inflation_factor
                 
                 # Add anomaly metadata
                 new_row['anomaly_type'] = anomaly_type
@@ -1726,7 +1756,7 @@ class SyntheticAnomalyGenerator:
                 template_indices.append(idx)
         
         logger.info(f"Generated {len(new_rows)} suspicious buyer-supplier "
-                   "pair anomaly rows")
+                   f"pair anomaly rows (target threshold: {suspicious_threshold:,.0f})")
         return new_rows, template_indices
     
     def get_anomaly_summary(self) -> pd.DataFrame:

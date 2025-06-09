@@ -107,8 +107,7 @@ class ProcurementGraphBuilder:
         logger.info("Cleaning validation set...")
         X_val = anomaly_remover.clean_dataset(
             X_val,
-            anomaly_types=['single_bid_competitive', 'price_inflation', 
-                          'price_deflation', 'high_market_concentration'],
+            anomaly_types=anomaly_types,
             strict_threshold=True
         )
 
