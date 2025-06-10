@@ -3,7 +3,7 @@ import getpass
 from typing import Optional, Dict, Any
 import logging
 
-from config import LLM_MODEL_NAME
+from config import LLM_MODEL_NAME, TEMPERATURE
 
 from langchain_community.utilities import SQLDatabase
 from langchain.chat_models import init_chat_model
@@ -73,13 +73,41 @@ class RAGQuerySystem:
         
         try:
             self.llm = init_chat_model(self.llm_model,
-                                       model_provider="mistralai")
-            logger.info(f"Initialized LLM: {self.llm_model}")
+                                       model_provider="mistralai",
+                                       temperature=TEMPERATURE)
+            logger.info(f"Initialized LLM: {self.llm_model} "
+                        f"with temperature: {TEMPERATURE}")
         except Exception as e:
             logger.error(f"Failed to initialize LLM: {e}")
             raise
     
     def _setup_prompts(self) -> None:
+
+
+        # Complementary rules if needed
+        '''
+
+        🚨 ABSOLUTELY CRITICAL SQL FORMATTING RULES - NEVER IGNORE THESE 🚨:
+
+        1. ANY table name that contains dots (.), spaces, or hyphens (-) MUST be 
+        enclosed in single quotes.
+        2. This is NON-NEGOTIABLE. Failure to do this will cause syntax errors.
+        3. Before writing any query, scan ALL table names for special characters.
+
+        EXAMPLES:
+        ✅ CORRECT: SELECT COUNT(*) FROM 'data.gouv.fr.2022.clean';
+        ❌ WRONG: SELECT COUNT(*) FROM data.gouv.fr.2022.clean;
+        ✅ CORRECT: SELECT * FROM 'my-table' WHERE id = 1;
+        ❌ WRONG: SELECT * FROM my-table WHERE id = 1;
+
+        REMEMBER: If a table name has dots, spaces, or hyphens → USE SINGLE QUOTES!
+
+        Before finalizing your query, double-check that ALL table names with special 
+        characters are properly quoted with single quotes.
+
+        '''
+
+
         """Setup prompt templates."""
         system_message = """
 Given an input question, create a syntactically correct {dialect} query to
@@ -95,17 +123,10 @@ Pay attention to use only the column names that you can see in the schema
 description. Be careful to not query for columns that do not exist. Also,
 pay attention to which column is in which table.
 
-CRITICAL SQL FORMATTING RULES:
-- ALWAYS enclose table names that contain special characters (dots, spaces, 
-  hyphens) in single quotes
-- Example: SELECT COUNT(*) FROM 'data.gouv.fr.2022.clean'; (CORRECT)
-- Example: SELECT COUNT(*) FROM data.gouv.fr.2022.clean; (INCORRECT)
-- Column names with special characters should also be quoted with single quotes
-
 Only use the following tables:
 {table_info}
 """
-        
+
         user_prompt = "Question: {input}"
         
         self.query_prompt_template = ChatPromptTemplate([
@@ -123,6 +144,19 @@ Only use the following tables:
         graph_builder.add_edge(START, "_write_query")
         self.graph = graph_builder.compile()
     
+    def _fix_table_quotes(self, query: str) -> str:
+        """
+        Post-process SQL query to ensure the specific table name with dots
+        is properly quoted.
+        """
+        # Specifically handle the data.gouv.fr.2022.clean table
+        table_name = "data.gouv.fr.2022.clean"
+        quoted_table = "'data.gouv.fr.2022.clean'"
+        if table_name in query and quoted_table not in query:
+            query = query.replace(table_name, quoted_table)
+        
+        return query
+    
     def _write_query(self, state: State) -> Dict[str, str]:
         """Generate SQL query to fetch information."""
         try:
@@ -136,8 +170,11 @@ Only use the following tables:
             structured_llm = self.llm.with_structured_output(QueryOutput)
             result = structured_llm.invoke(prompt)
             
-            logger.info(f"Generated query: {result['query']}")
-            return {"query": result["query"]}
+            # Post-process query to ensure table names are properly quoted
+            processed_query = self._fix_table_quotes(result["query"])
+            
+            logger.info(f"Generated query: {processed_query}")
+            return {"query": processed_query}
         
         except Exception as e:
             logger.error(f"Error generating query: {e}")
