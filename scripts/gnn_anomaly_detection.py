@@ -43,8 +43,7 @@ class ProcurementGraphBuilder:
     """Build graph structures from procurement data."""
     
     def __init__(self):
-        self.node_scaler = StandardScaler()
-        self.edge_scaler = StandardScaler()
+        pass
     
     def load_data(self, data_path: str) -> pd.DataFrame:
         """Load procurement data from CSV files."""
