@@ -27,7 +27,7 @@ def save_montant_prediction_pipeline():
                                             categorical_columns)
 
     #on fit le model
-    df = pd.read_csv('../data/data_clean.csv')
+    df = pd.read_csv(os.path.join(data_path,'data_clean.csv'))
     df = filter_top_cpv_categories(df, top_n=150, cpv_column='codeCPV_3')
     df.drop(df[df['montant'] > 999_999].index, inplace=True)
     X = df
@@ -60,8 +60,7 @@ def save_marche_similaire_pipeline():
                                           categorical_columns)
 
     #fit
-    data_path='../data/data_clean.csv'
-    df = pd.read_csv(data_path, encoding='utf-8')
+    df = pd.read_csv(os.path.join(data_path,'data_clean.csv'))
     df_cpv = filter_top_cpv_categories(df, top_n=50, cpv_column='codeCPV_2_3')
 
     pipeline_marche_sim.fit(df_cpv)
