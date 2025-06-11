@@ -3,8 +3,7 @@ import numpy as np
 
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import (StandardScaler, OneHotEncoder,
-                                  FunctionTransformer)
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 
@@ -116,7 +115,7 @@ class LogTransformer(BaseEstimator, TransformerMixin):
         is_array = not hasattr(X, 'columns')
         if is_array:
             X = pd.DataFrame(X, columns=[f'col_{i}'
-                                       for i in range(X.shape[1])])
+                                         for i in range(X.shape[1])])
 
         X_transformed = X.copy()
         # Apply log transform to all numeric columns
@@ -223,6 +222,104 @@ class StringConverter(BaseEstimator, TransformerMixin):
                 else np.array([]))
 
 
+class DataFrameTransformer(BaseEstimator, TransformerMixin):
+    """
+    Transformer that converts array output to DataFrame with feature names.
+    
+    This transformer is needed to ensure the final output is a pandas DataFrame
+    with proper column names, making it pickleable unlike lambda functions.
+    """
+    def __init__(self, column_transformer=None):
+        self.column_transformer = column_transformer
+        self.feature_names_in_ = None
+        self.feature_names_out_ = None
+        
+    def fit(self, X, y=None):
+        # Store input feature names if available
+        if hasattr(X, 'columns'):
+            self.feature_names_in_ = X.columns.tolist()
+        return self
+        
+    def get_feature_names_out(self, input_features=None):
+        """
+        Get output feature names for transformation.
+        
+        Parameters
+        ----------
+        input_features : array-like or None, default=None
+            Input feature names from the previous transformer
+            
+        Returns
+        -------
+        feature_names_out : ndarray of str objects
+            Feature names for the output DataFrame
+        """
+        if input_features is not None:
+            return np.array(input_features)
+        elif self.feature_names_out_ is not None:
+            return np.array(self.feature_names_out_)
+        elif (self.column_transformer is not None and
+              hasattr(self.column_transformer, 'get_feature_names_out')):
+            return self.column_transformer.get_feature_names_out()
+        elif self.feature_names_in_ is not None:
+            return np.array(self.feature_names_in_)
+        else:
+            # Fallback to generic names
+            return np.array([f'feature_{i}' for i in range(self.n_features_)])
+        
+    def transform(self, X):
+        """
+        Convert array to DataFrame with feature names.
+        
+        Parameters
+        ----------
+        X : array-like
+            Input data (typically from column transformer output)
+            
+        Returns
+        -------
+        pandas.DataFrame
+            DataFrame with proper column names
+        """
+        # If X is already a DataFrame, return as is
+        if hasattr(X, 'columns'):
+            return X
+            
+        # Determine number of features
+        if hasattr(X, 'shape'):
+            self.n_features_ = X.shape[1] if len(X.shape) > 1 else len(X)
+        else:
+            self.n_features_ = len(X[0]) if len(X) > 0 else 0
+            
+        # Try to get proper feature names from column transformer
+        if (self.column_transformer is not None and
+            hasattr(self.column_transformer, 'get_feature_names_out')):
+            try:
+                feature_names = self.column_transformer.get_feature_names_out()
+            except Exception:
+                feature_names = ([f'feature_{i}'
+                                  for i in range(self.n_features_)])
+        elif self.feature_names_out_ is not None:
+            feature_names = self.feature_names_out_
+        else:
+            # Generate generic column names as fallback
+            feature_names = [f'feature_{i}' for i in range(self.n_features_)]
+            
+        return pd.DataFrame(X, columns=feature_names)
+        
+    def set_output_columns(self, feature_names):
+        """
+        Set the feature names to use for output DataFrame.
+        
+        Parameters
+        ----------
+        feature_names : array-like
+            Feature names to use for DataFrame columns
+        """
+        self.feature_names_out_ = list(feature_names)
+        return self
+
+
 def columns_selection(df, numerical_columns, binary_columns,
                       categorical_columns):
     """
@@ -253,8 +350,9 @@ def create_pipeline(numerical_columns, binary_columns, categorical_columns):
     """
     Create a complete preprocessing pipeline for public contract data.
     
-    This pipeline handles initial preprocessing (feature selection, categorical
-    encoding) and follow-up preprocessing (imputation, scaling, one-hot encoding).
+    This pipeline handles initial preprocessing (feature selection,
+    categorical encoding) and follow-up preprocessing (imputation, scaling,
+    one-hot encoding).
     
     Parameters
     ----------
@@ -313,25 +411,18 @@ def create_pipeline(numerical_columns, binary_columns, categorical_columns):
         ('column_transformer', column_transformer)
     ])
     
-    def transform_to_df(X, feature_names):
-        """Convert array to DataFrame with specified column names."""
-        return pd.DataFrame(X, columns=feature_names)
+    # Create DataFrameTransformer for proper feature names
+    df_transformer = DataFrameTransformer(column_transformer)
     
     # Complete pipeline
     complete_pipeline = Pipeline([
         ('init', init_pipeline),
         ('follow', follow_pipeline),
-        ('to_dataframe', FunctionTransformer(
-            lambda X: transform_to_df(
-                X,
-                follow_pipeline.named_steps[
-                    'column_transformer'].get_feature_names_out()
-            ),
-            validate=False
-        ))
+        ('to_dataframe', df_transformer)
     ])
     
-    return complete_pipeline 
+    return complete_pipeline
+
 
 def create_pipeline_cat(cat):
 
@@ -364,6 +455,9 @@ def create_pipeline_cat(cat):
                                ]
     
     else:
-        return "Error, cat not in 'pred_montant', 'marche_sim', 'anomalie'."
+        error_msg = ("Error, cat not in 'pred_montant', 'marche_sim', "
+                     "'anomalie'.")
+        return error_msg
     
-    return create_pipeline(numerical_columns, binary_columns, categorical_columns)
+    return create_pipeline(numerical_columns, binary_columns,
+                           categorical_columns)
