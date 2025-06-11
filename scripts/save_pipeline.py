@@ -9,7 +9,6 @@ from scripts.data_cleaner import filter_top_cpv_categories
 
 data_path = os.path.join(os.path.dirname(__file__), '..', 'data')
 
-
 def save_montant_prediction_pipeline():
     """Create and save the pipeline for montant prediction."""
     # Estimation du montant
