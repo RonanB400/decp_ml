@@ -810,7 +810,9 @@ class GNNAnomalyDetector:
     def train_node_model(self, graph_tensor: tfgnn.GraphTensor,
                          validation_graph_tensor: tfgnn.GraphTensor = None,
                          epochs: int = 50,
-                         use_huber_loss: bool = False) -> Dict:
+                         use_huber_loss: bool = False,
+                         save_checkpoints: bool = True,
+                         checkpoint_dir: str = None) -> Dict:
         """Train the node anomaly detection model."""
         logger.info(f"Training node GNN model for {epochs} epochs...")
         
@@ -881,6 +883,37 @@ class GNNAnomalyDetector:
             loss_weights={'node_embeddings': 0.1, 'node_reconstructed': 0.9}
         )
         
+        # Setup callbacks
+        callbacks = []
+        
+        # Add checkpoint callback if requested
+        if save_checkpoints:
+            if checkpoint_dir is None:
+                checkpoint_dir = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    'models', 'checkpoints')
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            
+            checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
+                filepath=os.path.join(checkpoint_dir, 'node_model_epoch_{epoch:02d}_val_loss_{val_loss:.4f}.h5'),
+                monitor='val_loss' if validation_data is not None else 'loss',
+                save_best_only=True,
+                save_weights_only=False,
+                mode='min',
+                verbose=1,
+                save_freq='epoch'
+            )
+            callbacks.append(checkpoint_callback)
+        
+        # Add early stopping
+        early_stopping = tf.keras.callbacks.EarlyStopping(
+            monitor='val_loss' if validation_data is not None else 'loss',
+            patience=10,
+            restore_best_weights=True,
+            verbose=1
+        )
+        callbacks.append(early_stopping)
+        
         # Create batched dataset for training
         train_dataset = tf.data.Dataset.from_tensors((graph_tensor, train_targets))
         train_dataset = train_dataset.repeat()
@@ -898,17 +931,31 @@ class GNNAnomalyDetector:
             steps_per_epoch=1,
             validation_steps=1 if validation_dataset is not None else None,
             epochs=epochs,
-            verbose=1
+            verbose=1,
+            callbacks=callbacks
         )
         
-        # Save the trained model
+        # Save the final trained model
         data_dir = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             'data')
         os.makedirs(data_dir, exist_ok=True)
-        model_path = os.path.join(data_dir, 'gnn_node_anomaly_model')
-        tf.saved_model.save(self.node_model, model_path)
-        logger.info(f"Node model saved to {model_path}")
+        
+        # Save in multiple formats
+        # 1. SavedModel format (for deployment)
+        savedmodel_path = os.path.join(data_dir, 'gnn_node_anomaly_model')
+        tf.saved_model.save(self.node_model, savedmodel_path)
+        logger.info(f"Node model saved to {savedmodel_path}")
+        
+        # 2. H5 format (for easy loading)
+        h5_path = os.path.join(data_dir, 'gnn_node_anomaly_model.h5')
+        self.node_model.save(h5_path)
+        logger.info(f"Node model saved to {h5_path}")
+        
+        # 3. Save weights only
+        weights_path = os.path.join(data_dir, 'gnn_node_weights.h5')
+        self.node_model.save_weights(weights_path)
+        logger.info(f"Node model weights saved to {weights_path}")
         
         return history.history
 
